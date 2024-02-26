@@ -1,3 +1,4 @@
+# Required for core functionality
 import argparse
 import os
 import re
@@ -15,7 +16,7 @@ except ImportError:
     tqdm_available = False
     print("Consider installing tqdm for progress bar: 'pip install tqdm'")
 
-# for direct integration with Excel workbook
+# For direct integration with Excel workbook
 try:
     import pandas as pd
     from openpyxl import load_workbook
@@ -25,7 +26,7 @@ try:
 except ImportError:
     xl_available = False   
 
-## for debugging only
+# For debugging only
 import pprint
 
 # Global variable(s)
@@ -107,18 +108,18 @@ def write_to_csv(header, data, filename):
 # One single function will be more efficient but start to get messy. Brace youreself.
 def process_scans(scans, full_csv):
 
-    # define (most) variables and data structures
+    # Define (most) variables and data structures
 
-    # date range of data
+    # Date range of data
     first_date = datetime.max.date()
     last_date = datetime.min.date()
 
-    # general scan stats
+    # General scan stats
     sum_scan_count = yes_scan_count = no_scan_count = 0
     scan_stats_by_date = {}
     scanned_projects = {}
 
-    # results info
+    # Results info
     results = {
         "total_vulns__sum": 0, "high__sum": 0, "medium__sum": 0, "low__sum": 0, "info__sum": 0, 
         "total_vulns__max": 0, "high__max": 0, "medium__max": 0, "low__max": 0, "info__max": 0, 
