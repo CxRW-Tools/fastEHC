@@ -31,7 +31,7 @@ except ImportError:
 import pprint
 
 ### Global variable(s)
-CC_SNAPSHOT_SECONDS = 7200 # the size of concurrency snapshots in seconds
+CC_SNAPSHOT_SECONDS = 5 # the size of concurrency snapshots in seconds
 EXCEL_TEMPLATE_FILE = None # the full path to the Excel file that will be used as a template
 EXCEL_SHEET = 'Data' # the name of the Excel sheet where the data goes
 
