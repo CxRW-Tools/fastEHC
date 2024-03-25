@@ -320,7 +320,7 @@ def process_scans(scans, full_csv):
         if tqdm_available:
             pbar.update(1)
             pbar.refresh()
-        
+
         # If required, we want to output to the full scan CSV first so as to include scans with missing fields (such as loc). This will cause a potential
         # mismatch between record counts but shouldn't impact anything relating to metrics or analysis. This CSV is only used for manual analysis.
         if full_csv['enabled']:
@@ -353,7 +353,6 @@ def process_scans(scans, full_csv):
             aggregate_metrics['COUNT_full_scans'] += 1
 
         aggregate_metrics['SUM_loc'] += loc
-        aggregate_metrics['SUM_failed_loc'] += loc
         aggregate_metrics['SUM_failed_loc'] += scan.get('FailedLOC', 0)
         aggregate_metrics['MAX_loc_scan'] = max(aggregate_metrics['MAX_loc_scan'], loc)
         aggregate_metrics['MAX_failed_loc_scan'] = max(aggregate_metrics['MAX_failed_loc_scan'], scan.get('FailedLOC', 0))
@@ -380,23 +379,23 @@ def process_scans(scans, full_csv):
             aggregate_metrics['COUNT_zero_results_scans'] += 1
 
         # Update time metrics
-        source_pulling_time = math.ceil(calculate_time_difference(scan.get('ScanRequestedOn'),scan.get('QueuedOn')))
+        source_pulling_time = calculate_time_difference(scan.get('ScanRequestedOn'),scan.get('QueuedOn'))
         aggregate_metrics['SUM_source_pulling_time'] += source_pulling_time
         aggregate_metrics['MAX_source_pulling_time'] = max(aggregate_metrics['MAX_source_pulling_time'], source_pulling_time)
-        
-        queue_time = math.ceil(calculate_time_difference(scan.get('QueuedOn'),scan.get('EngineStartedOn')))
+
+        queue_time = calculate_time_difference(scan.get('QueuedOn'),scan.get('EngineStartedOn'))
         aggregate_metrics['SUM_queue_time'] += queue_time
         aggregate_metrics['MAX_queue_time'] = max(aggregate_metrics['MAX_queue_time'], queue_time)
         
         if noscan is False:
-            engine_scan_time = math.ceil(calculate_time_difference(scan.get('EngineStartedOn'),scan.get('EngineFinishedOn')))
+            engine_scan_time = calculate_time_difference(scan.get('EngineStartedOn'),scan.get('EngineFinishedOn'))
             aggregate_metrics['SUM_engine_scan_time'] += engine_scan_time
-            aggregate_metrics['MAX_engine_scan_time'] = max(aggregate_metrics['MAX_engine_scan_time'], scan.get('Low', 0))
+            aggregate_metrics['MAX_engine_scan_time'] = max(aggregate_metrics['MAX_engine_scan_time'], calculate_time_difference(scan.get('EngineStartedOn'),scan.get('EngineFinishedOn')))
         
-        total_scan_time = math.ceil(calculate_time_difference(scan.get('ScanRequestedOn'),scan.get('ScanCompletedOn')))
+        total_scan_time = calculate_time_difference(scan.get('ScanRequestedOn'),scan.get('ScanCompletedOn'))
         aggregate_metrics['SUM_total_scan_time'] += total_scan_time
         aggregate_metrics['MAX_total_scan_time'] = max(aggregate_metrics['MAX_total_scan_time'], total_scan_time)
-
+        
         # Increment the proper day counters
         day_of_week = scan_date.strftime('%A')
         day_key_map = {
@@ -531,15 +530,16 @@ def process_scans(scans, full_csv):
             cc_events.append((optimal_scan_finish, -1, 'engine'))
         
     # End of scan processing loop
-        
+
     ### Calculate metrics that require the full data set
-    aggregate_metrics['total_days'] = (aggregate_metrics['last_scan_date'] - aggregate_metrics['first_scan_date']).days + 1
+    # Note that some averages are calculated against all scans and some ignore noscans; this matches the prior version of the tool but could be changed
+    aggregate_metrics['total_days'] = (aggregate_metrics['last_scan_date'] - aggregate_metrics['first_scan_date']).days
     aggregate_metrics['total_weeks'] = math.ceil(aggregate_metrics['total_days'] / 7)
     aggregate_metrics['total_scan_days'] = len(scan_stats_by_date)
 
     aggregate_metrics['AVG_loc_scan'] = math.ceil(aggregate_metrics['SUM_loc'] / aggregate_metrics['COUNT_scans'])
     aggregate_metrics['AVG_failed_loc_scan'] = math.ceil(aggregate_metrics['SUM_failed_loc'] / aggregate_metrics['COUNT_scans'])
-    aggregate_metrics['AVG_loc_day'] = math.ceil(aggregate_metrics['SUM_loc'] / (aggregate_metrics['total_days']))
+    aggregate_metrics['AVG_loc_day'] = math.ceil(aggregate_metrics['SUM_loc'] / (aggregate_metrics['total_scan_days']))
 
     for date, stats in scan_stats_by_date.items():
         aggregate_metrics['MAX_loc_day'] = max(aggregate_metrics['MAX_loc_day'], stats['SUM_loc'])
@@ -549,18 +549,16 @@ def process_scans(scans, full_csv):
             aggregate_metrics['MAX_scan_date'] = date
 
     for bin_key, bin in scan_times_by_loc.items():
-        if (bin['COUNT_yes_scans'] + bin['COUNT_no_scans']) > 0:
-            bin['AVG_source_pulling_time'] = math.ceil(bin['SUM_source_pulling_time'] / (bin['COUNT_yes_scans'] + bin['COUNT_no_scans']))
-            bin['AVG_queue_time'] = math.ceil(bin['SUM_queue_time'] / (bin['COUNT_yes_scans'] + bin['COUNT_no_scans']))
-            bin['AVG_total_scan_time'] = math.ceil(bin['SUM_total_scan_time'] / (bin['COUNT_yes_scans'] + bin['COUNT_no_scans']))
         if bin['COUNT_yes_scans'] > 0:
+            bin['AVG_source_pulling_time'] = math.ceil(bin['SUM_source_pulling_time'] / (bin['COUNT_yes_scans']))
+            bin['AVG_queue_time'] = math.ceil(bin['SUM_queue_time'] / (bin['COUNT_yes_scans']))
             bin['AVG_engine_scan_time'] = math.ceil(bin['SUM_engine_scan_time'] / bin['COUNT_yes_scans'])
             bin['AVG_total_scan_time'] = math.ceil(bin['SUM_total_scan_time'] / bin['COUNT_yes_scans'])
-    
+
     if aggregate_metrics['COUNT_scans'] > 0:
-        aggregate_metrics['AVG_source_pulling_time'] = math.ceil(bin['SUM_source_pulling_time'] / aggregate_metrics['COUNT_scans'])
-        aggregate_metrics['AVG_queue_time'] = math.ceil(aggregate_metrics['SUM_queue_time'] / aggregate_metrics['COUNT_scans'])
-        aggregate_metrics['AVG_total_scan_time'] = math.ceil(aggregate_metrics['SUM_total_scan_time'] / aggregate_metrics['COUNT_scans'])
+        aggregate_metrics['AVG_source_pulling_time'] = math.ceil(aggregate_metrics['SUM_source_pulling_time'] / aggregate_metrics['COUNT_yes_scans'])
+        aggregate_metrics['AVG_queue_time'] = math.ceil(aggregate_metrics['SUM_queue_time'] / aggregate_metrics['COUNT_yes_scans'])
+        aggregate_metrics['AVG_total_scan_time'] = math.ceil(aggregate_metrics['SUM_total_scan_time'] / aggregate_metrics['COUNT_yes_scans'])
     if aggregate_metrics['COUNT_yes_scans'] > 0:
         aggregate_metrics['AVG_engine_scan_time'] = math.ceil(aggregate_metrics['SUM_engine_scan_time'] / aggregate_metrics['COUNT_yes_scans'])
         aggregate_metrics['AVG_total_scan_time'] = math.ceil(aggregate_metrics['SUM_total_scan_time'] / aggregate_metrics['COUNT_yes_scans'])
