@@ -31,9 +31,12 @@ except ImportError:
 import pprint
 
 ### Global variable(s)
-CC_SNAPSHOT_SECONDS = 5 # the size of concurrency snapshots in seconds
-EXCEL_TEMPLATE_FILE = None # the full path to the Excel file that will be used as a template
-EXCEL_SHEET = 'Data' # the name of the Excel sheet where the data goes
+# The size of concurrency snapshots in seconds
+CC_SNAPSHOT_SECONDS = 5
+# The full path to the Excel file that will be used as a template; blank value ('') means undefined. Note the 'r' to properly recognize backslashes!
+DEFAULT_EXCEL_TEMPLATE = r'C:\Users\RyanW\OneDrive - Checkmarx\Documents\Document Templates\FastEHC Template.xlsx'
+# The name of the Excel sheet where the data goes
+EXCEL_SHEET = 'Data'
 
 
 ### Ingest the data file
@@ -67,7 +70,6 @@ def calculate_time_difference(t1, t2):
     dt1 = parse_date(t1)
     dt2 = parse_date(t2)
     time_diff = (dt2 - dt1).total_seconds()
-    
     return time_diff
 
 
@@ -378,24 +380,24 @@ def process_scans(scans, full_csv):
         if scan.get('TotalVulnerabilities', 0) == 0:
             aggregate_metrics['COUNT_zero_results_scans'] += 1
 
-        # Update time metrics
-        source_pulling_time = calculate_time_difference(scan.get('ScanRequestedOn'),scan.get('QueuedOn'))
+        # Update time metrics; deal with negative duration issues that sometimes occur
+        source_pulling_time = max(calculate_time_difference(scan.get('ScanRequestedOn'),scan.get('QueuedOn')), 0)
         aggregate_metrics['SUM_source_pulling_time'] += source_pulling_time
         aggregate_metrics['MAX_source_pulling_time'] = max(aggregate_metrics['MAX_source_pulling_time'], source_pulling_time)
 
-        queue_time = calculate_time_difference(scan.get('QueuedOn'),scan.get('EngineStartedOn'))
+        queue_time = max(calculate_time_difference(scan.get('QueuedOn'),scan.get('EngineStartedOn')), 0)
         aggregate_metrics['SUM_queue_time'] += queue_time
         aggregate_metrics['MAX_queue_time'] = max(aggregate_metrics['MAX_queue_time'], queue_time)
         
         if noscan is False:
-            engine_scan_time = calculate_time_difference(scan.get('EngineStartedOn'),scan.get('EngineFinishedOn'))
+            engine_scan_time = max(calculate_time_difference(scan.get('EngineStartedOn'),scan.get('EngineFinishedOn')), 0)
             aggregate_metrics['SUM_engine_scan_time'] += engine_scan_time
             aggregate_metrics['MAX_engine_scan_time'] = max(aggregate_metrics['MAX_engine_scan_time'], calculate_time_difference(scan.get('EngineStartedOn'),scan.get('EngineFinishedOn')))
         
-        total_scan_time = calculate_time_difference(scan.get('ScanRequestedOn'),scan.get('ScanCompletedOn'))
+        total_scan_time = max(calculate_time_difference(scan.get('ScanRequestedOn'),scan.get('ScanCompletedOn')), 0)
         aggregate_metrics['SUM_total_scan_time'] += total_scan_time
         aggregate_metrics['MAX_total_scan_time'] = max(aggregate_metrics['MAX_total_scan_time'], total_scan_time)
-        
+
         # Increment the proper day counters
         day_of_week = scan_date.strftime('%A')
         day_key_map = {
@@ -902,15 +904,32 @@ if __name__ == "__main__":
     parser.add_argument("--customer", type=str, default="", help="Optional name of the customer")
     parser.add_argument("--csv", action="store_true", help="Generate CSV output files.")
     parser.add_argument("--full_data", action="store_true", help="Generate CSV output of complete scan data.")
-    parser.add_argument("--excel", type=str, default="", help="Export EHC data directly to the specified Excel workbook")
+    parser.add_argument("--excel", nargs='?', const=DEFAULT_EXCEL_TEMPLATE, default=None, help="Export EHC data directly to the specified Excel workbook")
 
     args = parser.parse_args()
+
+    # Make sure that some sort of output is defined
+    if not (args.csv or args.full_data or args.excel):
+        parser.error("At least one of the output options --csv, --full_data, or --excel must be specified.")
+        exit(1)
+
     input_file = args.input_file
     output_name = args.customer.replace(" ", "_") if args.customer else os.path.splitext(os.path.basename(input_file))[0]
-    excel_filename = args.excel if args.excel else None
-    
+    excel_template = args.excel
+
+    if excel_template == '':
+        parser.error("No Excel template file is defined. Either provide a default in the script or define as '--excel=template_file.xlsx'")
+
     # Define the output directory using the optional name if provided
     output_dir = os.path.join(os.getcwd(), f"ehc_output_{output_name}_{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+
+    # Define the target Excel workbook filename
+    if args.excel:
+        excel_filename = f"EHC-{output_name}.xlsx"
+        excel_target_full_path = os.path.join(output_dir, excel_filename)
+    else:
+        excel_filename = None
+        excel_target_full_path = None
 
     # Initialize structures to hold output configs
     full_csv = {
@@ -924,11 +943,11 @@ if __name__ == "__main__":
     }
     excel_config = {
         'enabled': True if args.excel else False,
-        'filename': excel_filename
+        'excel_target': excel_target_full_path
     }
-    
-    # If we are creating any CSV files, create the output directory
-    if args.full_data or args.csv:
+
+    # If we are creating any files, create the output directory
+    if args.full_data or args.csv or args.excel:
         try:
             # Attempt to create the directory
             os.makedirs(output_dir, exist_ok=True)
@@ -944,13 +963,27 @@ if __name__ == "__main__":
         # Make sure we have the required libraries
         if not  xl_available:
             parser.error("--excel requires pandas and openpyxl libraries: 'pip install pandas openpyxl'")
-        # Make sure the file exists
-        if not os.path.isfile(excel_filename):
-            print(f"Error: The file '{excel_filename}' does not exist.")
+        # Make sure the template file exists
+        if not os.path.isfile(excel_template):
+            print(f"Error: The file '{excel_template}' does not exist.")
             exit(1)
+        # Open the template workbook to validate that it is an Excel file
         try:
-            # Open the workbook
-            workbook = load_workbook(excel_filename)
+            workbook = load_workbook(excel_template)
+        except InvalidFileException:
+            print(f"Error: The file '{excel_template}' is not a valid Excel file or is corrupted.")
+            exit(1)
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+            exit(1)
+        # Copy the template in order to create the target Excel workbook
+        try:
+            shutil.copy(excel_template, excel_target_full_path)
+        except Exception as e:
+            print(f"Error occurred: {e}")
+        # Open the new Excel workbook
+        try:
+            workbook = load_workbook(excel_target_full_path)
         except InvalidFileException:
             print(f"Error: The file '{excel_filename}' is not a valid Excel file or is corrupted.")
             exit(1)
@@ -966,4 +999,7 @@ if __name__ == "__main__":
 
     # If we exported to Excel, save the workbook
     if(excel_config['enabled']):
-        workbook.save(excel_filename)
+        workbook.save(excel_target_full_path)
+
+    if args.full_data or args.csv or args.excel:
+        print (f"Data analyzed and output files written to {output_dir}")
