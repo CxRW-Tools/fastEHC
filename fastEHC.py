@@ -1,3 +1,12 @@
+### Global variable(s)
+# The size of concurrency snapshots in seconds; decreasing will provide more precision but increase processing time
+CC_SNAPSHOT_SECONDS = 1
+# The full path to the Excel file that will be used as a template; blank value ('') means undefined. Note the 'r' to properly recognize backslashes!
+DEFAULT_EXCEL_TEMPLATE = r'C:\Users\RyanW\OneDrive - Checkmarx\Documents\Document Templates\FastEHC Template.xlsx'
+# The name of the Excel sheet where the data goes
+EXCEL_SHEET = 'Data'
+
+
 ### Required for core functionality
 import argparse
 import os
@@ -29,14 +38,6 @@ except ImportError:
 
 ### For debugging only
 import pprint
-
-### Global variable(s)
-# The size of concurrency snapshots in seconds
-CC_SNAPSHOT_SECONDS = 5
-# The full path to the Excel file that will be used as a template; blank value ('') means undefined. Note the 'r' to properly recognize backslashes!
-DEFAULT_EXCEL_TEMPLATE = r'C:\Users\RyanW\OneDrive - Checkmarx\Documents\Document Templates\FastEHC Template.xlsx'
-# The name of the Excel sheet where the data goes
-EXCEL_SHEET = 'Data'
 
 
 ### Ingest the data file
@@ -921,7 +922,8 @@ if __name__ == "__main__":
         parser.error("No Excel template file is defined. Either provide a default in the script or define as '--excel=template_file.xlsx'")
 
     # Define the output directory using the optional name if provided
-    output_dir = os.path.join(os.getcwd(), f"ehc_output_{output_name}_{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+    start_time = datetime.now().strftime('%Y%m%d-%H%M%S')
+    output_dir = os.path.join(os.getcwd(), f"ehc_output_{output_name}_{start_time}")
 
     # Define the target Excel workbook filename
     if args.excel:
@@ -1001,5 +1003,8 @@ if __name__ == "__main__":
     if(excel_config['enabled']):
         workbook.save(excel_target_full_path)
 
+    end_time = datetime.now().strftime('%Y%m%d-%H%M%S')
+    elapsed_time = format_seconds_to_hms(calculate_time_difference(start_time, end_time))
+
     if args.full_data or args.csv or args.excel:
-        print (f"Data analyzed and output files written to {output_dir}")
+        print (f"Data analyzed in {elapsed_time} and output files written to {output_dir}")
