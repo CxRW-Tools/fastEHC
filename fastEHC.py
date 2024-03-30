@@ -1,6 +1,6 @@
 ### Global variable(s)
 # The size of concurrency snapshots in seconds; decreasing will provide more precision but increase processing time
-CC_SNAPSHOT_SECONDS = 1
+CC_SNAPSHOT_SECONDS = 15
 # The full path to the Excel file that will be used as a template; blank value ('') means undefined. Note the 'r' to properly recognize backslashes!
 DEFAULT_EXCEL_TEMPLATE = r'C:\Users\RyanW\OneDrive - Checkmarx\Documents\Document Templates\FastEHC Template.xlsx'
 # The name of the Excel sheet where the data goes
@@ -900,12 +900,13 @@ def output_scans_by_week(weekly_scan_counts, csv_config, excel_config):
 
 ### Main
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Process scans and output CSV files if requested.")
-    parser.add_argument("input_file", type=str, help="The JSON file containing scan data.")
+    parser = argparse.ArgumentParser(description="Process scans and output CSV files if requested")
+    parser.add_argument("input_file", type=str, help="JSON file containing scan data")
     parser.add_argument("--customer", type=str, default="", help="Optional name of the customer")
-    parser.add_argument("--csv", action="store_true", help="Generate CSV output files.")
-    parser.add_argument("--full_data", action="store_true", help="Generate CSV output of complete scan data.")
-    parser.add_argument("--excel", nargs='?', const=DEFAULT_EXCEL_TEMPLATE, default=None, help="Export EHC data directly to the specified Excel workbook")
+    parser.add_argument("--cc_snapshot", type=int, default=CC_SNAPSHOT_SECONDS, help="Interval in seconds for capturing concurrency snapshots (default: %(default)s)")
+    parser.add_argument("--csv", action="store_true", help="Generate CSV output files")
+    parser.add_argument("--full_data", action="store_true", help="Generate CSV output of complete scan data")
+    parser.add_argument("--excel", nargs='?', const=DEFAULT_EXCEL_TEMPLATE, default=None, help="Template file for Excel export")
 
     args = parser.parse_args()
 
@@ -917,6 +918,9 @@ if __name__ == "__main__":
     input_file = args.input_file
     output_name = args.customer.replace(" ", "_") if args.customer else os.path.splitext(os.path.basename(input_file))[0]
     excel_template = args.excel
+    
+    if args.cc_snapshot:
+        CC_SNAPSHOT_SECONDS = args.cc_snapshot
 
     if excel_template == '':
         parser.error("No Excel template file is defined. Either provide a default in the script or define as '--excel=template_file.xlsx'")
