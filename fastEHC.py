@@ -1011,4 +1011,4 @@ if __name__ == "__main__":
     elapsed_time = format_seconds_to_hms(calculate_time_difference(start_time, end_time))
 
     if args.full_data or args.csv or args.excel:
-        print (f"Data analyzed in {elapsed_time} and output files written to {output_dir}")
+        print (f"FastEHC analyzed {processed_data['aggregate_metrics']['COUNT_scans']:,} scans in {elapsed_time} and wrote output files to {output_dir}")
