@@ -598,10 +598,16 @@ def process_scans(scans, full_csv):
             aggregate_metrics['MAX_scans_day'] = stats['COUNT_scans']
             aggregate_metrics['MAX_scan_date'] = date
 
-        stats['AVG_total_scan_time'] = stats['SUM_total_scan_time'] / stats['COUNT_yes_scans']
-        stats['AVG_source_pulling_time'] = stats['SUM_source_pulling_time'] / stats['COUNT_yes_scans']
-        stats['AVG_queue_time'] = stats['SUM_queue_time'] / stats['COUNT_yes_scans']
-        stats['AVG_engine_scan_time'] = stats['SUM_engine_scan_time'] / stats['COUNT_yes_scans']
+        if stats['COUNT_yes_scans'] > 0:
+            stats['AVG_total_scan_time'] = stats['SUM_total_scan_time'] / stats['COUNT_yes_scans']
+            stats['AVG_source_pulling_time'] = stats['SUM_source_pulling_time'] / stats['COUNT_yes_scans']
+            stats['AVG_queue_time'] = stats['SUM_queue_time'] / stats['COUNT_yes_scans']
+            stats['AVG_engine_scan_time'] = stats['SUM_engine_scan_time'] / stats['COUNT_yes_scans']
+        else:
+            stats['AVG_total_scan_time'] = 0
+            stats['AVG_source_pulling_time'] = 0
+            stats['AVG_queue_time'] = 0
+            stats['AVG_engine_scan_time'] = 0
 
     for bin_key, bin in scan_times_by_loc.items():
         if bin['COUNT_yes_scans'] > 0:
@@ -946,51 +952,27 @@ def output_scans_by_week(scan_stats_by_date, csv_config, excel_config):
         
         # Initialize or update the weekly data
         if monday_of_week not in weekly_data:
-            weekly_data[monday_of_week] = {
-                'COUNT_yes_scans': value['COUNT_yes_scans'],
-                'COUNT_no_scans': value['COUNT_no_scans'],
-                'COUNT_scans': value['COUNT_scans'],
-                'COUNT_full_scans': value['COUNT_full_scans'],
-                'COUNT_incremental_scans': value['COUNT_incremental_scans'],
-                'SUM_loc': value['SUM_loc'],
-                'MAX_loc': value['MAX_loc'],
-                'SUM_failed_loc': value['SUM_failed_loc'],
-                'MAX_failed_loc': value['MAX_failed_loc'],
-                'SUM_total_scan_time': value['SUM_total_scan_time'],
-                'SUM_source_pulling_time': value['SUM_source_pulling_time'],
-                'SUM_queue_time': value['SUM_queue_time'],
-                'SUM_engine_scan_time': value['SUM_engine_scan_time'],
-                'MAX_total_scan_time': value['MAX_total_scan_time'],
-                'MAX_source_pulling_time': value['MAX_source_pulling_time'],
-                'MAX_queue_time': value['MAX_queue_time'],
-                'MAX_engine_scan_time': value['MAX_engine_scan_time'],
-                'days_counted': 1
-            }
+            weekly_data[monday_of_week] = value.copy()
+            weekly_data[monday_of_week]['days_counted'] = 1
         else:
             week_data = weekly_data[monday_of_week]
-            week_data['COUNT_yes_scans'] += value['COUNT_yes_scans']
-            week_data['COUNT_no_scans'] += value['COUNT_no_scans']
-            week_data['COUNT_scans'] += value['COUNT_scans']
-            week_data['COUNT_full_scans'] += value['COUNT_full_scans']
-            week_data['COUNT_incremental_scans'] += value['COUNT_incremental_scans']
-            week_data['SUM_loc'] += value['SUM_loc']
-            week_data['MAX_loc'] = max(week_data['MAX_loc'], value['MAX_loc'])
-            week_data['SUM_failed_loc'] += value['SUM_failed_loc']
-            week_data['MAX_failed_loc'] = max(week_data['MAX_failed_loc'], value['MAX_failed_loc'])
-            week_data['SUM_total_scan_time'] += value['SUM_total_scan_time']
-            week_data['SUM_source_pulling_time'] += value['SUM_source_pulling_time']
-            week_data['SUM_queue_time'] += value['SUM_queue_time']
-            week_data['SUM_engine_scan_time'] += value['SUM_engine_scan_time']
-            week_data['MAX_total_scan_time'] = max(week_data['MAX_total_scan_time'], value['MAX_total_scan_time'])
-            week_data['MAX_source_pulling_time'] = max(week_data['MAX_source_pulling_time'], value['MAX_source_pulling_time'])
-            week_data['MAX_queue_time'] = max(week_data['MAX_queue_time'], value['MAX_queue_time'])
-            week_data['MAX_engine_scan_time'] = max(week_data['MAX_engine_scan_time'], value['MAX_engine_scan_time'])
+            for key in value:
+                if 'COUNT' in key or 'SUM' in key:
+                    week_data[key] += value[key]
+                elif 'MAX' in key:
+                    week_data[key] = max(week_data[key], value[key])
             week_data['days_counted'] += 1
 
-    # Create the data structure to hold the various fields
-    output_data = []
+    # Prepare the data for output
+    output_data = []  # This will be a list of lists for CSV/Excel rows
     for monday, data in weekly_data.items():
-        output_data.append([
+        # Calculate averages per scan if 'COUNT_yes_scans' is greater than 0 to avoid division by zero
+        avg_total_scan_time = data['SUM_total_scan_time'] / data['COUNT_yes_scans'] if data['COUNT_yes_scans'] > 0 else 0
+        avg_source_pulling_time = data['SUM_source_pulling_time'] / data['COUNT_yes_scans'] if data['COUNT_yes_scans'] > 0 else 0
+        avg_queue_time = data['SUM_queue_time'] / data['COUNT_yes_scans'] if data['COUNT_yes_scans'] > 0 else 0
+        avg_engine_scan_time = data['SUM_engine_scan_time'] / data['COUNT_yes_scans'] if data['COUNT_yes_scans'] > 0 else 0
+
+        row = [
             monday,
             data['COUNT_scans'],
             data['COUNT_no_scans'],
@@ -1000,15 +982,16 @@ def output_scans_by_week(scan_stats_by_date, csv_config, excel_config):
             data['MAX_loc'],
             data['SUM_failed_loc'],
             data['MAX_failed_loc'],
-            format_seconds_to_timedelta(data['SUM_total_scan_time'] / data['days_counted']),
-            format_seconds_to_timedelta(data['MAX_total_scan_time']),
-            format_seconds_to_timedelta(data['SUM_source_pulling_time'] / data['days_counted']),
-            format_seconds_to_timedelta(data['MAX_source_pulling_time']),
-            format_seconds_to_timedelta(data['SUM_queue_time'] / data['days_counted']),
-            format_seconds_to_timedelta(data['MAX_queue_time']),
-            format_seconds_to_timedelta(data['SUM_engine_scan_time'] / data['days_counted']),
-            format_seconds_to_timedelta(data['MAX_engine_scan_time'])
-        ])
+            format_seconds_to_timedelta(avg_total_scan_time),
+            data['MAX_total_scan_time'],
+            format_seconds_to_timedelta(avg_source_pulling_time),
+            data['MAX_source_pulling_time'],
+            format_seconds_to_timedelta(avg_queue_time),
+            data['MAX_queue_time'],
+            format_seconds_to_timedelta(avg_engine_scan_time),
+            data['MAX_engine_scan_time']
+        ]
+        output_data.append(row)
 
     # Create csv, if required
     if csv_config['enabled']:
