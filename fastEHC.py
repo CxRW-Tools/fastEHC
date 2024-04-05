@@ -82,6 +82,11 @@ def format_seconds_to_hms(seconds):
     return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
     
 
+### Convert time in seconds to a timeobject
+def format_seconds_to_timedelta(seconds):
+    return timedelta(seconds=seconds)
+    
+    
 ### Output a data structure to the Excel 'Data' sheet starting at the indicated cell (e.g., J4)
 def write_to_excel(data, start_col, start_row):
     try:
@@ -761,10 +766,10 @@ def output_scan_metrics(data, csv_config, excel_config):
 def output_scan_duration(data, csv_config, excel_config):
     # Create the data structure to hold the various fields
     output_data = [
-        ['Total Scan Duration',format_seconds_to_hms(data['aggregate_metrics']['AVG_total_scan_time']),format_seconds_to_hms(data['aggregate_metrics']['MAX_total_scan_time'])],
-        ['Source Pulling Duration',format_seconds_to_hms(data['aggregate_metrics']['AVG_source_pulling_time']),format_seconds_to_hms(data['aggregate_metrics']['MAX_source_pulling_time'])],
-        ['Queued Duration',format_seconds_to_hms(data['aggregate_metrics']['AVG_queue_time']),format_seconds_to_hms(data['aggregate_metrics']['MAX_queue_time'])],
-        ['Engine Scan Duration',format_seconds_to_hms(data['aggregate_metrics']['AVG_engine_scan_time']),format_seconds_to_hms(data['aggregate_metrics']['MAX_engine_scan_time'])]
+        ['Total Scan Duration',format_seconds_to_timedelta(data['aggregate_metrics']['AVG_total_scan_time']),format_seconds_to_timedelta(data['aggregate_metrics']['MAX_total_scan_time'])],
+        ['Source Pulling Duration',format_seconds_to_timedelta(data['aggregate_metrics']['AVG_source_pulling_time']),format_seconds_to_timedelta(data['aggregate_metrics']['MAX_source_pulling_time'])],
+        ['Queued Duration',format_seconds_to_timedelta(data['aggregate_metrics']['AVG_queue_time']),format_seconds_to_timedelta(data['aggregate_metrics']['MAX_queue_time'])],
+        ['Engine Scan Duration',format_seconds_to_timedelta(data['aggregate_metrics']['AVG_engine_scan_time']),format_seconds_to_timedelta(data['aggregate_metrics']['MAX_engine_scan_time'])]
     ]
 
     # Create csv, if required
@@ -883,8 +888,8 @@ def output_scan_time_analysis(data, csv_config, excel_config):
     output_data = []
     for key, value in data['scan_times_by_loc'].items():
         output_data.append([key, value['COUNT_yes_scans'] + value['COUNT_no_scans'], (value['COUNT_yes_scans'] + value['COUNT_no_scans']) / data['aggregate_metrics']['COUNT_scans'],
-            format_seconds_to_hms(value['AVG_total_scan_time']), format_seconds_to_hms(value['AVG_source_pulling_time']),
-            format_seconds_to_hms(value['AVG_queue_time']), format_seconds_to_hms(value['AVG_engine_scan_time'])])
+            format_seconds_to_timedelta(value['AVG_total_scan_time']), format_seconds_to_timedelta(value['AVG_source_pulling_time']),
+            format_seconds_to_timedelta(value['AVG_queue_time']), format_seconds_to_timedelta(value['AVG_engine_scan_time'])])
 
     # Create csv, if required
     if csv_config['enabled']:
@@ -915,10 +920,10 @@ def output_scans_by_date(scan_stats_by_date, csv_config, excel_config):
     for date, value in scan_stats_by_date.items():
         output_data.append([date, value['COUNT_scans'], value['COUNT_no_scans'], value['COUNT_full_scans'], value['COUNT_incremental_scans'],
             value['SUM_loc'],value['MAX_loc'],value['SUM_failed_loc'],value['MAX_failed_loc'],
-            format_seconds_to_hms(value['AVG_total_scan_time']),format_seconds_to_hms(value['MAX_total_scan_time']),
-            format_seconds_to_hms(value['AVG_source_pulling_time']),format_seconds_to_hms(value['MAX_source_pulling_time']),
-            format_seconds_to_hms(value['AVG_queue_time']),format_seconds_to_hms(value['MAX_queue_time']),
-            format_seconds_to_hms(value['AVG_engine_scan_time']),format_seconds_to_hms(value['MAX_engine_scan_time'])])
+            format_seconds_to_timedelta(value['AVG_total_scan_time']),format_seconds_to_timedelta(value['MAX_total_scan_time']),
+            format_seconds_to_timedelta(value['AVG_source_pulling_time']),format_seconds_to_timedelta(value['MAX_source_pulling_time']),
+            format_seconds_to_timedelta(value['AVG_queue_time']),format_seconds_to_timedelta(value['MAX_queue_time']),
+            format_seconds_to_timedelta(value['AVG_engine_scan_time']),format_seconds_to_timedelta(value['MAX_engine_scan_time'])])
         
     # Create csv, if required
     if csv_config['enabled']:
@@ -995,14 +1000,14 @@ def output_scans_by_week(scan_stats_by_date, csv_config, excel_config):
             data['MAX_loc'],
             data['SUM_failed_loc'],
             data['MAX_failed_loc'],
-            format_seconds_to_hms(data['SUM_total_scan_time'] / data['days_counted']),
-            format_seconds_to_hms(data['MAX_total_scan_time']),
-            format_seconds_to_hms(data['SUM_source_pulling_time'] / data['days_counted']),
-            format_seconds_to_hms(data['MAX_source_pulling_time']),
-            format_seconds_to_hms(data['SUM_queue_time'] / data['days_counted']),
-            format_seconds_to_hms(data['MAX_queue_time']),
-            format_seconds_to_hms(data['SUM_engine_scan_time'] / data['days_counted']),
-            format_seconds_to_hms(data['MAX_engine_scan_time'])
+            format_seconds_to_timedelta(data['SUM_total_scan_time'] / data['days_counted']),
+            format_seconds_to_timedelta(data['MAX_total_scan_time']),
+            format_seconds_to_timedelta(data['SUM_source_pulling_time'] / data['days_counted']),
+            format_seconds_to_timedelta(data['MAX_source_pulling_time']),
+            format_seconds_to_timedelta(data['SUM_queue_time'] / data['days_counted']),
+            format_seconds_to_timedelta(data['MAX_queue_time']),
+            format_seconds_to_timedelta(data['SUM_engine_scan_time'] / data['days_counted']),
+            format_seconds_to_timedelta(data['MAX_engine_scan_time'])
         ])
 
     # Create csv, if required
