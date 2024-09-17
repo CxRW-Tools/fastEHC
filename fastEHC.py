@@ -540,11 +540,7 @@ def process_scans(scans, full_csv):
                 'AVG_total_scan_time': 0,
                 'AVG_source_pulling_time': 0,
                 'AVG_queue_time': 0,
-                'AVG_engine_scan_time': 0,
-                'COUNT_high_results': 0,
-                'COUNT_medium_results': 0,
-                'COUNT_low_results': 0,
-                'COUNT_info_results': 0
+                'AVG_engine_scan_time': 0
             }
 
         if noscan is False:
@@ -570,10 +566,6 @@ def process_scans(scans, full_csv):
         scan_stats_by_date[scan_date]['MAX_source_pulling_time'] = max(source_pulling_time, scan_stats_by_date[scan_date]['MAX_source_pulling_time'])
         scan_stats_by_date[scan_date]['SUM_queue_time'] += queue_time
         scan_stats_by_date[scan_date]['MAX_queue_time'] = max(queue_time, scan_stats_by_date[scan_date]['MAX_queue_time'])
-        scan_stats_by_date[scan_date]['COUNT_high_results'] += scan.get('High', 0)
-        scan_stats_by_date[scan_date]['COUNT_medium_results'] += scan.get('Medium', 0)
-        scan_stats_by_date[scan_date]['COUNT_low_results'] += scan.get('Low', 0)
-        scan_stats_by_date[scan_date]['COUNT_info_results'] += scan.get('Info', 0)
 
         # Parse timestamps for concurrency queueing and engine events
         queued_on = parse_date(scan['QueuedOn']).timestamp()
@@ -1001,11 +993,7 @@ def output_scans_by_week(scan_stats_by_date, csv_config, excel_config):
             format_seconds_to_timedelta(avg_queue_time),
             data['MAX_queue_time'],
             format_seconds_to_timedelta(avg_engine_scan_time),
-            data['MAX_engine_scan_time'],
-            data['COUNT_high_results'],
-            data['COUNT_medium_results'],
-            data['COUNT_low_results'],
-            data['COUNT_info_results']
+            data['MAX_engine_scan_time']
         ]
         output_data.append(row)
 
