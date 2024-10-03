@@ -2,7 +2,7 @@
 # The size of concurrency snapshots in seconds; decreasing will provide more precision but increase processing time
 CC_SNAPSHOT_SECONDS = 15
 # The full path to the Excel file that will be used as a template; blank value ('') means undefined. Note the 'r' to properly recognize backslashes!
-DEFAULT_EXCEL_TEMPLATE = r'C:\Users\RyanW\OneDrive - Checkmarx\Documents\Document Templates\FastEHC Template.xlsx'
+DEFAULT_EXCEL_TEMPLATE = r'C:\FastEHC Template.xlsx'
 # The name of the Excel sheet where the data goes
 EXCEL_SHEET = 'Data'
 
