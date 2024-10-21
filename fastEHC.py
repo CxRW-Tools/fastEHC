@@ -154,8 +154,8 @@ def process_scans(scans, full_csv):
     aggregate_metrics = {
         'COUNT_yes_scans': 0, # number of scans that fully ran
         'COUNT_no_scans': 0, # number of no-scans due to no code change
-        'COUNT_missing_scans': 0, # number of scans with no recorded LOC; this is currently collected but unused
-        'COUNT_scans': 0, # total of yes and no scans; excludes missing scans because those scans
+        'COUNT_missing_scans': 0, # number of scans with no recorded LOC
+        'COUNT_scans': 0, # total of yes and no scans; excludes missing scans because those scans are not included in other metrics
         'COUNT_full_scans': 0, # number of full scans requested (includes no_scans)
         'COUNT_incremental_scans': 0, # number of incremental scans requested (includes no_scans)
 
@@ -729,13 +729,16 @@ def output_analysis(data, csv_config, excel_config):
 ### Output Functions: Handle all types of output for a specific metric type or report section
 
 def output_summary_of_scans(data, csv_config, excel_config):
+    submitted_scans = data['aggregate_metrics']['COUNT_scans']] + data['aggregate_metrics']['COUNT_missing_scans']];
     # Create the data structure to hold the various fields
     output_data = [
         ['Start Date',data['aggregate_metrics']['first_scan_date']],
         ['End Date',data['aggregate_metrics']['last_scan_date']],
         ['Days',data['aggregate_metrics']['total_days']],
         ['Weeks',data['aggregate_metrics']['total_weeks']],
-        ['Scans Submitted',data['aggregate_metrics']['COUNT_scans']],
+        ['Scans Submitted',submitted_scans],
+        ['Scans Completed',data['aggregate_metrics']['COUNT_scans']],
+        ['Scans Failed',data['aggregate_metrics']['COUNT_missing_scans']],
         ['Full Scans Submitted',data['aggregate_metrics']['COUNT_full_scans'],data['aggregate_metrics']['COUNT_full_scans'] / data['aggregate_metrics']['COUNT_scans']],
         ['Incremental Scans Submitted',data['aggregate_metrics']['COUNT_incremental_scans'],data['aggregate_metrics']['COUNT_incremental_scans'] / data['aggregate_metrics']['COUNT_scans']],
         ['No-Change Scans',data['aggregate_metrics']['COUNT_no_scans'],data['aggregate_metrics']['COUNT_no_scans'] / data['aggregate_metrics']['COUNT_scans']],
