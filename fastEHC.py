@@ -729,7 +729,7 @@ def output_analysis(data, csv_config, excel_config):
 ### Output Functions: Handle all types of output for a specific metric type or report section
 
 def output_summary_of_scans(data, csv_config, excel_config):
-    submitted_scans = data['aggregate_metrics']['COUNT_scans']] + data['aggregate_metrics']['COUNT_missing_scans']];
+    submitted_scans = data['aggregate_metrics']['COUNT_scans'] + data['aggregate_metrics']['COUNT_missing_scans'];
     # Create the data structure to hold the various fields
     output_data = [
         ['Start Date',data['aggregate_metrics']['first_scan_date']],
