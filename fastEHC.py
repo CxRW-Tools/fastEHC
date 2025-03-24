@@ -169,21 +169,25 @@ def process_scans(scans, full_csv):
         'MAX_loc_day': 0, # maximum number of lines of code per day
         
         'SUM_total_results': 0, # sum of total scan results
+        'SUM_critical_results': 0, # sum of critical scan results
         'SUM_high_results': 0, # sum of high scan results
         'SUM_medium_results': 0, # sum of medium scan results
         'SUM_low_results': 0, # sum of low scan results
         'SUM_info_results': 0, # sum of info scan results
         'AVG_total_results': 0, # average number of total scan results
+        'AVG_critical_results': 0, # average number of critical scan results
         'AVG_high_results': 0, # average number of high scan results
         'AVG_medium_results': 0, # average number of medium scan results
         'AVG_low_results': 0, # average number of low scan results
         'AVG_info_results': 0, # average number of info scan results
         'MAX_total_results': 0, # maximum number of total scan results
+        'MAX_critical_results': 0, # maximum number of high scan results
         'MAX_high_results': 0, # maximum number of high scan results
         'MAX_medium_results': 0, # maximum number of medium scan results
         'MAX_low_results': 0, # maximum number of low scan results
         'MAX_info_results': 0, # maximum number of info scan results
 
+        'COUNT_critical_results_scans': 0, # count of scans with high results
         'COUNT_high_results_scans': 0, # count of scans with high results
         'COUNT_medium_results_scans': 0, # count of scans with high results
         'COUNT_low_results_scans': 0, # count of scans with high results
@@ -392,15 +396,19 @@ def process_scans(scans, full_csv):
         aggregate_metrics['MAX_failed_loc_scan'] = max(aggregate_metrics['MAX_failed_loc_scan'], scan.get('FailedLOC', 0))
 
         aggregate_metrics['SUM_total_results'] += scan.get('TotalVulnerabilities', 0)
+        aggregate_metrics['SUM_critical_results'] += scan.get('Critical', 0)
         aggregate_metrics['SUM_high_results'] += scan.get('High', 0)
         aggregate_metrics['SUM_medium_results'] += scan.get('Medium', 0)
         aggregate_metrics['SUM_low_results'] += scan.get('Low', 0)
         aggregate_metrics['SUM_info_results'] += scan.get('Info', 0)
         aggregate_metrics['MAX_total_results'] = max(aggregate_metrics['MAX_total_results'], scan.get('TotalVulnerabilities', 0))
+        aggregate_metrics['MAX_critical_results'] = max(aggregate_metrics['MAX_critical_results'], scan.get('Critical', 0))
         aggregate_metrics['MAX_high_results'] = max(aggregate_metrics['MAX_high_results'], scan.get('High', 0))
         aggregate_metrics['MAX_medium_results'] = max(aggregate_metrics['MAX_medium_results'], scan.get('Medium', 0))
         aggregate_metrics['MAX_low_results'] = max(aggregate_metrics['MAX_low_results'], scan.get('Low', 0))
         aggregate_metrics['MAX_info_results'] = max(aggregate_metrics['MAX_info_results'], scan.get('Info', 0))
+        if scan.get('Critical', 0) > 0:
+            aggregate_metrics['COUNT_critical_results_scans'] += 1
         if scan.get('High', 0) > 0:
             aggregate_metrics['COUNT_high_results_scans'] += 1
         if scan.get('Medium', 0) > 0:
@@ -629,6 +637,7 @@ def process_scans(scans, full_csv):
         aggregate_metrics['AVG_total_scan_time'] = math.ceil(aggregate_metrics['SUM_total_scan_time'] / aggregate_metrics['COUNT_yes_scans'])
 
     aggregate_metrics['AVG_total_results'] = math.ceil(aggregate_metrics['SUM_total_results'] / aggregate_metrics['COUNT_scans'])
+    aggregate_metrics['AVG_critical_results'] = round(aggregate_metrics['SUM_critical_results'] / aggregate_metrics['COUNT_scans'])
     aggregate_metrics['AVG_high_results'] = round(aggregate_metrics['SUM_high_results'] / aggregate_metrics['COUNT_scans'])
     aggregate_metrics['AVG_medium_results'] = round(aggregate_metrics['SUM_medium_results'] / aggregate_metrics['COUNT_scans'])
     aggregate_metrics['AVG_low_results'] = round(aggregate_metrics['SUM_low_results'] / aggregate_metrics['COUNT_scans'])
@@ -742,6 +751,7 @@ def output_summary_of_scans(data, csv_config, excel_config):
         ['Full Scans Submitted',data['aggregate_metrics']['COUNT_full_scans'],data['aggregate_metrics']['COUNT_full_scans'] / data['aggregate_metrics']['COUNT_scans']],
         ['Incremental Scans Submitted',data['aggregate_metrics']['COUNT_incremental_scans'],data['aggregate_metrics']['COUNT_incremental_scans'] / data['aggregate_metrics']['COUNT_scans']],
         ['No-Change Scans',data['aggregate_metrics']['COUNT_no_scans'],data['aggregate_metrics']['COUNT_no_scans'] / data['aggregate_metrics']['COUNT_scans']],
+        ['Scans with Critical Results',data['aggregate_metrics']['COUNT_critical_results_scans'],data['aggregate_metrics']['COUNT_critical_results_scans'] / data['aggregate_metrics']['COUNT_scans']],
         ['Scans with High Results',data['aggregate_metrics']['COUNT_high_results_scans'],data['aggregate_metrics']['COUNT_high_results_scans'] / data['aggregate_metrics']['COUNT_scans']],
         ['Scans with Medium Results',data['aggregate_metrics']['COUNT_medium_results_scans'],data['aggregate_metrics']['COUNT_medium_results_scans'] / data['aggregate_metrics']['COUNT_scans']],
         ['Scans with Low Results',data['aggregate_metrics']['COUNT_low_results_scans'],data['aggregate_metrics']['COUNT_low_results_scans'] / data['aggregate_metrics']['COUNT_scans']],
@@ -798,6 +808,7 @@ def output_scan_results_and_severity(data, csv_config, excel_config):
     # Create the data structure to hold the various fields
     output_data = [
         ['Total',data['aggregate_metrics']['AVG_total_results'],data['aggregate_metrics']['MAX_total_results']],
+        ['Critical',data['aggregate_metrics']['AVG_critical_results'],data['aggregate_metrics']['MAX_critical_results']],
         ['High',data['aggregate_metrics']['AVG_high_results'],data['aggregate_metrics']['MAX_high_results']],
         ['Medium',data['aggregate_metrics']['AVG_medium_results'],data['aggregate_metrics']['MAX_medium_results']],
         ['Low',data['aggregate_metrics']['AVG_low_results'],data['aggregate_metrics']['MAX_low_results']],
