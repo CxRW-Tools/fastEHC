@@ -1025,18 +1025,18 @@ def output_scans_by_week(scan_stats_by_date, csv_config, excel_config):
 ### Main
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process scans and output CSV files if requested")
-    parser.add_argument("input_file", type=str, help="JSON file containing scan data")
+    parser.add_argument("input-file", type=str, help="JSON file containing scan data")
     parser.add_argument("--customer", type=str, default="", help="Optional name of the customer")
-    parser.add_argument("--cc_snapshot", type=int, default=CC_SNAPSHOT_SECONDS, help="Interval in seconds for capturing concurrency snapshots (default: %(default)s)")
+    parser.add_argument("--cc-snapshot", type=int, default=CC_SNAPSHOT_SECONDS, help="Interval in seconds for capturing concurrency snapshots (default: %(default)s)")
     parser.add_argument("--csv", action="store_true", help="Generate CSV output files")
-    parser.add_argument("--full_data", action="store_true", help="Generate CSV output of complete scan data")
+    parser.add_argument("--full-data", action="store_true", help="Generate CSV output of complete scan data")
     parser.add_argument("--excel", nargs='?', const=DEFAULT_EXCEL_TEMPLATE, default=None, help="Template file for Excel export")
 
     args = parser.parse_args()
 
     # Make sure that some sort of output is defined
     if not (args.csv or args.full_data or args.excel):
-        parser.error("At least one of the output options --csv, --full_data, or --excel must be specified.")
+        parser.error("At least one of the output options --csv, --full-data, or --excel must be specified.")
         exit(1)
 
     input_file = args.input_file
