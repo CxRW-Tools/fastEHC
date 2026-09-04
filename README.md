@@ -19,6 +19,14 @@ is bundled under `assets/`.
 
 ## Usage
 
+Most common: generate just the Excel report.
+
+```
+python fastEHC.py <input-file> --excel
+```
+
+Full option list:
+
 ```
 python fastEHC.py <input-file> [--customer NAME] [--csv] [--full-data] [--excel] [--cc-snapshot SECONDS]
 ```
