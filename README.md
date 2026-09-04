@@ -17,6 +17,12 @@ The Excel report is generated entirely from code (`workbook_builder.py` + `cx_th
 there is no `.xlsx` template file to keep in sync. The Checkmarx wordmark used in the report
 is bundled under `assets/`.
 
+**Run this from a local (non-cloud-synced) working directory.** Writing the multi-MB output
+`.xlsx` directly into a live OneDrive/SharePoint-synced folder can race with the sync client
+and corrupt the file (Excel will offer to "repair" it on open, and charts may come back blank).
+Generate into a local folder, then move or copy the finished file into your synced folder
+afterward.
+
 ## Usage
 
 Most common: generate just the Excel report.
