@@ -1470,7 +1470,7 @@ if __name__ == "__main__":
 
     # If we exported to Excel, save the workbook
     if excel_config['enabled']:
-        excel_config['workbook'].save(excel_target_full_path)
+        workbook_builder.save_workbook(excel_config['workbook'], excel_target_full_path)
 
     end_time = datetime.now().strftime('%Y%m%d-%H%M%S')
     elapsed_time = format_seconds_to_hms(calculate_time_difference(start_time, end_time))

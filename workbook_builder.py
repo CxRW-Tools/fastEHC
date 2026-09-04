@@ -4,11 +4,54 @@ Each sheet is constructed with its static labels, formulas, charts, and Checkmar
 branding already in place; the `output_*` functions in fastEHC.py then fill in
 values via `write_to_excel()`, which styles each cell as it writes it.
 """
+import os
+import re
+import zipfile
+
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
 
 import cx_theme as theme
+
+_DRAWINGML_NS = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+_ANCHOR_BLOCK_RE = re.compile(r"<(oneCellAnchor|twoCellAnchor)>.*?</\1>", re.DOTALL)
+_EXT_RE = re.compile(r'<ext cx="(\d+)" cy="(\d+)"/>')
+
+
+def _patch_anchor_block(match):
+    """openpyxl anchors every chart's graphicFrame with an empty <xfrm/> (no off/ext
+    children) when the chart was added via a plain cell-string anchor. That's schema-
+    invalid -- Excel silently discards the entire drawing part (all charts *and* any
+    image sharing that sheet) rather than just the offending chart. Fill it in using
+    the same extent the (valid) outer anchor already carries."""
+    block = match.group(0)
+    if "<graphicFrame>" not in block or "<xfrm/>" not in block:
+        return block
+    ext_match = _EXT_RE.search(block)
+    if not ext_match:
+        return block
+    cx, cy = ext_match.groups()
+    replacement = (f'<xfrm><a:off {_DRAWINGML_NS} x="0" y="0"/>'
+                   f'<a:ext {_DRAWINGML_NS} cx="{cx}" cy="{cy}"/></xfrm>')
+    return block.replace("<xfrm/>", replacement, 1)
+
+
+def save_workbook(wb, path):
+    """Save the workbook, then patch the empty-<xfrm/> defect openpyxl 3.1.5 leaves
+    on every chart's graphicFrame (see _patch_anchor_block)."""
+    wb.save(path)
+
+    tmp_path = path + ".tmp"
+    with zipfile.ZipFile(path, "r") as zin, zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if re.match(r"xl/drawings/drawing\d+\.xml$", item.filename):
+                text = data.decode("utf-8")
+                text = _ANCHOR_BLOCK_RE.sub(_patch_anchor_block, text)
+                data = text.encode("utf-8")
+            zout.writestr(item, data)
+    os.replace(tmp_path, path)
 
 # ---- Column groups shared by the Projects/Teams detail tables ----
 SEVERITIES = ["Critical", "High", "Medium", "Low", "Info"]

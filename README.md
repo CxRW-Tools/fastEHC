@@ -17,10 +17,10 @@ The Excel report is generated entirely from code (`workbook_builder.py` + `cx_th
 there is no `.xlsx` template file to keep in sync. The Checkmarx wordmark used in the report
 is bundled under `assets/`.
 
-**Run this from a local (non-cloud-synced) working directory.** Writing the multi-MB output
-`.xlsx` directly into a live OneDrive/SharePoint-synced folder can race with the sync client
-and corrupt the file (Excel will offer to "repair" it on open, and charts may come back blank).
-Generate into a local folder, then move or copy the finished file into your synced folder
+If Excel ever offers to "repair" a generated report and the charts come back blank, make
+sure you're on a current checkout -- this was caused by an openpyxl defect (every chart's
+`graphicFrame` was missing a required transform) that `workbook_builder.save_workbook()`
+now patches automatically after saving.
 afterward.
 
 ## Usage
