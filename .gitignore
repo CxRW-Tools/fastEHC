@@ -1,0 +1,5 @@
+.checkmarx/
+__pycache__/
+*.pyc
+ehc_output_*/
+.venv/

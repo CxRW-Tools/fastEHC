@@ -1,10 +1,11 @@
 ### Global variable(s)
 # The size of concurrency snapshots in seconds; decreasing will provide more precision but increase processing time
 CC_SNAPSHOT_SECONDS = 15
-# The full path to the Excel file that will be used as a template; blank value ('') means undefined. Note the 'r' to properly recognize backslashes!
-DEFAULT_EXCEL_TEMPLATE = r'C:\FastEHC Template.xlsx'
-# The name of the Excel sheet where the data goes
-EXCEL_SHEET = 'Data'
+# Which severities to track per-project/per-team (avg/max/min)
+ENTITY_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info']
+ENTITY_SEVERITY_FIELDS = {'critical': 'Critical', 'high': 'High', 'medium': 'Medium', 'low': 'Low', 'info': 'Info'}
+# How many rows the Top-N project/team chart blocks hold
+TOP_N_ENTITIES = 15
 
 
 ### Required for core functionality
@@ -17,7 +18,6 @@ from dateutil.parser import parse as parse_date
 from collections import defaultdict
 import math
 import csv
-import shutil
 
 try:
     from tqdm import tqdm
@@ -26,15 +26,15 @@ except ImportError:
     tqdm_available = False
     print("Consider installing tqdm for progress bar: 'pip install tqdm'")
 
-### For direct integration with Excel workbook
+### For direct integration with Excel workbook -- the workbook is generated entirely
+### from code (see workbook_builder.py / cx_theme.py), no external template file needed
 try:
-    import pandas as pd
-    from openpyxl import load_workbook
-    from openpyxl.utils.exceptions import InvalidFileException
-    from openpyxl.utils import column_index_from_string
+    from openpyxl.utils import column_index_from_string, get_column_letter
+    import workbook_builder
+    import cx_theme
     xl_available = True
 except ImportError:
-    xl_available = False   
+    xl_available = False
 
 ### For debugging only
 import pprint
@@ -80,26 +80,102 @@ def format_seconds_to_hms(seconds):
     minutes = (seconds % 3600) // 60
     seconds = seconds % 60
     return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
-    
+
 
 ### Convert time in seconds to a timeobject
 def format_seconds_to_timedelta(seconds):
     return timedelta(seconds=seconds)
-    
-    
-### Output a data structure to the Excel 'Data' sheet starting at the indicated cell (e.g., J4)
-def write_to_excel(data, start_col, start_row):
+
+
+### Normalize a raw ProjectName into a "logical project" by stripping the leading
+# team-name token (redundant with TeamName) and any branch/suffix tokens after the
+# next one. Falls back to the raw name whenever the pattern doesn't apply, rather
+# than guessing.
+def normalize_project_name(project_name, team_name):
+    if not project_name:
+        return project_name or ""
+    parts = project_name.split("_", 2)
+    if len(parts) >= 2 and team_name and parts[0].strip().lower() == team_name.strip().lower():
+        return f"{team_name}/{parts[1]}"
+    return project_name
+
+
+### Create a fresh stats accumulator for one project or team entity
+def _new_entity_stats(team_name):
+    stats = {
+        'team_name': team_name,
+        'COUNT_scans': 0, 'COUNT_full_scans': 0, 'COUNT_incremental_scans': 0,
+        'SUM_loc': 0, 'MAX_loc': 0,
+        'SUM_failed_loc': 0, 'MAX_failed_loc': 0,
+        'SUM_file_count': 0, 'MAX_file_count': 0,
+        'first_scan_date': None, 'last_scan_date': None,
+        'active_days': set(),
+        'unique_projects': set(),
+    }
+    for sev in ENTITY_SEVERITIES:
+        stats[f'SUM_{sev}'] = 0
+        stats[f'MAX_{sev}'] = 0
+        stats[f'MIN_{sev}'] = None
+    return stats
+
+
+### Roll one scan's metrics into a project or team stats accumulator
+def _accumulate_entity_stats(stats, scan, loc, scan_date):
+    stats['COUNT_scans'] += 1
+    if scan.get('IsIncremental'):
+        stats['COUNT_incremental_scans'] += 1
+    else:
+        stats['COUNT_full_scans'] += 1
+
+    stats['SUM_loc'] += loc
+    stats['MAX_loc'] = max(stats['MAX_loc'], loc)
+
+    failed_loc = scan.get('FailedLOC', 0) or 0
+    stats['SUM_failed_loc'] += failed_loc
+    stats['MAX_failed_loc'] = max(stats['MAX_failed_loc'], failed_loc)
+
+    file_count = scan.get('FileCount', 0) or 0
+    stats['SUM_file_count'] += file_count
+    stats['MAX_file_count'] = max(stats['MAX_file_count'], file_count)
+
+    if stats['first_scan_date'] is None or scan_date < stats['first_scan_date']:
+        stats['first_scan_date'] = scan_date
+    if stats['last_scan_date'] is None or scan_date > stats['last_scan_date']:
+        stats['last_scan_date'] = scan_date
+    stats['active_days'].add(scan_date)
+
+    for sev in ENTITY_SEVERITIES:
+        v = scan.get(ENTITY_SEVERITY_FIELDS[sev], 0) or 0
+        stats[f'SUM_{sev}'] += v
+        stats[f'MAX_{sev}'] = max(stats[f'MAX_{sev}'], v)
+        stats[f'MIN_{sev}'] = v if stats[f'MIN_{sev}'] is None else min(stats[f'MIN_{sev}'], v)
+
+
+### Compute the derived (average/percentage) fields for one project or team entity
+def _finalize_entity_stats(stats, overall_total_weeks):
+    count = stats['COUNT_scans']
+    stats['AVG_loc'] = math.ceil(stats['SUM_loc'] / count) if count else 0
+    stats['AVG_file_count'] = math.ceil(stats['SUM_file_count'] / count) if count else 0
+    stats['PCT_incremental'] = stats['COUNT_incremental_scans'] / count if count else 0
+    stats['active_day_count'] = len(stats['active_days'])
+    stats['AVG_scans_per_week'] = stats['COUNT_scans'] / overall_total_weeks if overall_total_weeks else 0
+    for sev in ENTITY_SEVERITIES:
+        stats[f'AVG_{sev}'] = round(stats[f'SUM_{sev}'] / count, 2) if count else 0
+
+
+### Output a data structure to the Excel workbook starting at the indicated cell (e.g., J4)
+def write_to_excel(ws, data, start_col, start_row):
     try:
         # Convert start_col from letters to a numerical index
         start_col_index = column_index_from_string(start_col)
-        wb_sheet = workbook[EXCEL_SHEET]
-        
+
         for row_offset, row_data in enumerate(data, start=0):
             for col_offset, value in enumerate(row_data, start=0):
                 # Calculate actual row and column indices
                 row_idx = start_row + row_offset
                 col_idx = start_col_index + col_offset
-                wb_sheet.cell(row=row_idx, column=col_idx, value=value)
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                cx_theme.style_body_cell(cell)
     except IOError as e:
         print(f"IOError when writing to Excel file: {e}")
         return
@@ -167,7 +243,7 @@ def process_scans(scans, full_csv):
         'MAX_loc_scan': 0, # maximum number of lines of code per scan
         'MAX_failed_loc_scan': 0, # maximum number of failed lines of code per scan
         'MAX_loc_day': 0, # maximum number of lines of code per day
-        
+
         'SUM_total_results': 0, # sum of total scan results
         'SUM_critical_results': 0, # sum of critical scan results
         'SUM_high_results': 0, # sum of high scan results
@@ -224,7 +300,7 @@ def process_scans(scans, full_csv):
         'first_scan_date': datetime.max.date(), # the date of the first scan in the data set
         'last_scan_date': datetime.min.date(), # the date of the last scan in the data set
         'total_days': 0, # the number of days between the first and last scan
-        'total_weeks': 0, # the number of weeks between the first and last scan 
+        'total_weeks': 0, # the number of weeks between the first and last scan
         'total_scan_days': 0 # the totaly number of days that actually had scans
         }
 
@@ -297,33 +373,12 @@ def process_scans(scans, full_csv):
     }
 
     # Scan Statistics by Date: Store various statistics for every scan grouped by scan date
-    # This will be built dynamically but include the following fields:
-    # COUNT_yes_scans
-    # COUNT_no_scans
-    # COUNT_scans
-    # COUNT_full_scans
-    # COUNT_incremental_scans
-    # SUM_loc
-    # MAX_loc
-    # SUM_failed_loc
-    # MAX_failed_loc
-    # SUM_total_scan_time
-    # SUM_source_pulling_time
-    # SUM_queue_time
-    # SUM_engine_scan_time
-    # MAX_total_scan_time
-    # MAX_source_pulling_time
-    # MAX_queue_time
-    # MAX_engine_scan_time
-    # AVG_total_scan_time
-    # AVG_source_pulling_time
-    # AVG_queue_time
-    # AVG_engine_scan_time
-    # COUNT_high_results
-    # COUNT_medium_results
-    # COUNT_low_results
-    # COUNT_info_results
     scan_stats_by_date = {}
+
+    # Project & Team Stats: size/volume/severity metrics grouped by logical project and by team
+    project_stats = {}
+    team_stats = {}
+    team_name_to_owning_ids = defaultdict(set)
 
     # Temporary structure to track unique projects
     temp_pids = set()
@@ -334,7 +389,7 @@ def process_scans(scans, full_csv):
     # change_in_count is +1 for starts (entering queue or starting engine) and -1 for ends (leaving queue or engine finishing)
     # event_type distinguishes between 'queue' and 'engine'
     cc_events = filtered_cc_events = snapshot_metrics = []
-    
+
     ### Prepare to output CSV of all scan data and create output file, if required
     if full_csv['enabled']:
         try:
@@ -365,7 +420,7 @@ def process_scans(scans, full_csv):
             write_scan_to_full_csv(full_csv['field_names'], scan, full_csv_writer)
 
         # If there is no LOC value, we might as well just completely skip the scan.
-        # This differs from the current process but ensures that scan counts actually match in various metrics. 
+        # This differs from the current process but ensures that scan counts actually match in various metrics.
         # We will record the missing scan.
         loc = scan.get('LOC', None)
         if loc is None:
@@ -428,12 +483,12 @@ def process_scans(scans, full_csv):
         queue_time = max(calculate_time_difference(scan.get('QueuedOn'),scan.get('EngineStartedOn')), 0)
         aggregate_metrics['SUM_queue_time'] += queue_time
         aggregate_metrics['MAX_queue_time'] = max(aggregate_metrics['MAX_queue_time'], queue_time)
-        
+
         if noscan is False:
             engine_scan_time = max(calculate_time_difference(scan.get('EngineStartedOn'),scan.get('EngineFinishedOn')), 0)
             aggregate_metrics['SUM_engine_scan_time'] += engine_scan_time
             aggregate_metrics['MAX_engine_scan_time'] = max(aggregate_metrics['MAX_engine_scan_time'], calculate_time_difference(scan.get('EngineStartedOn'),scan.get('EngineFinishedOn')))
-        
+
         total_scan_time = max(calculate_time_difference(scan.get('ScanRequestedOn'),scan.get('ScanCompletedOn')), 0)
         aggregate_metrics['SUM_total_scan_time'] += total_scan_time
         aggregate_metrics['MAX_total_scan_time'] = max(aggregate_metrics['MAX_total_scan_time'], total_scan_time)
@@ -456,7 +511,7 @@ def process_scans(scans, full_csv):
             aggregate_metrics['COUNT_weekend_scans'] += 1
         else:
             aggregate_metrics['COUNT_weekday_scans'] += 1
-        
+
         aggregate_metrics['first_scan_date'] = min(aggregate_metrics['first_scan_date'], scan_date)
         aggregate_metrics['last_scan_date'] = max(aggregate_metrics['last_scan_date'], scan_date)
 
@@ -483,6 +538,23 @@ def process_scans(scans, full_csv):
         preset_name = scan.get('PresetName')
         scan_presets[preset_name] = scan_presets.get(preset_name, 0) + 1
 
+        ### Roll this scan into its logical project and team stats
+        team_name = scan.get('TeamName') or 'Unknown'
+        logical_project = normalize_project_name(project_name, team_name)
+
+        if logical_project not in project_stats:
+            project_stats[logical_project] = _new_entity_stats(team_name)
+        pstat = project_stats[logical_project]
+        pstat['team_name'] = team_name  # last-observed team wins
+        _accumulate_entity_stats(pstat, scan, loc, scan_date)
+
+        team_name_to_owning_ids[team_name].add(scan.get('OwningTeamId'))
+        if team_name not in team_stats:
+            team_stats[team_name] = _new_entity_stats(None)
+        tstat = team_stats[team_name]
+        _accumulate_entity_stats(tstat, scan, loc, scan_date)
+        tstat['unique_projects'].add(logical_project)
+
         ### Add scan times
         if loc <= 20000:
             bin_key = '0-20k'
@@ -508,7 +580,7 @@ def process_scans(scans, full_csv):
             bin_key = '7M-10M'
         else:
             bin_key = '10M+'
-            
+
         bin = scan_times_by_loc[bin_key]
 
         bin['SUM_source_pulling_time'] += source_pulling_time
@@ -557,7 +629,7 @@ def process_scans(scans, full_csv):
             scan_stats_by_date[scan_date]['MAX_engine_scan_time'] = max(engine_scan_time, scan_stats_by_date[scan_date]['MAX_engine_scan_time'])
         else:
             scan_stats_by_date[scan_date]['COUNT_no_scans'] += 1
-                
+
         if scan.get('IsIncremental', None):
             scan_stats_by_date[scan_date]['COUNT_incremental_scans'] += 1
         else:
@@ -590,7 +662,7 @@ def process_scans(scans, full_csv):
             optimal_scan_finish = queued_on + engine_scan_duration  # Calculate based on no queue delay assumption
             cc_events.append((engine_started_on, +1, 'engine'))
             cc_events.append((optimal_scan_finish, -1, 'engine'))
-        
+
     # End of scan processing loop
 
     ### Calculate metrics that require the full data set
@@ -605,7 +677,7 @@ def process_scans(scans, full_csv):
 
     for date, stats in scan_stats_by_date.items():
         aggregate_metrics['MAX_loc_day'] = max(aggregate_metrics['MAX_loc_day'], stats['SUM_loc'])
-        
+
         if stats['COUNT_scans'] > aggregate_metrics['MAX_scans_day']:
             aggregate_metrics['MAX_scans_day'] = stats['COUNT_scans']
             aggregate_metrics['MAX_scan_date'] = date
@@ -645,11 +717,22 @@ def process_scans(scans, full_csv):
 
     for origin, data in scan_origins.items():
         data['scan_percentage'] = data['scan_count'] / aggregate_metrics['COUNT_scans']
-    
+
+    # Finalize project/team derived metrics now that total_weeks is known
+    for stats in project_stats.values():
+        _finalize_entity_stats(stats, aggregate_metrics['total_weeks'])
+    for stats in team_stats.values():
+        _finalize_entity_stats(stats, aggregate_metrics['total_weeks'])
+    reorged_teams = {name: ids for name, ids in team_name_to_owning_ids.items() if len(ids) > 1}
+
     if tqdm_available:
         pbar.close()
     else:
         print("completed!")
+
+    if reorged_teams:
+        print(f"Note: {len(reorged_teams)} team name(s) were seen under more than one OwningTeamId "
+              f"(likely a reorg/rename) and were merged by name: {', '.join(sorted(reorged_teams))}")
 
     # Process concurrency events
     print(f"Calculating scan concurrency using {CC_SNAPSHOT_SECONDS} second snapshots...", end="", flush=True)
@@ -667,7 +750,7 @@ def process_scans(scans, full_csv):
     current_queue_length = 0
     event_index = 0
     snapshot_metrics = []
-    
+
     # For each snapshot...
     for snapshot in range(num_snapshots):
         # Calculate the bounds of the snapshot in timestamp format
@@ -676,14 +759,14 @@ def process_scans(scans, full_csv):
 
         while event_index < len(filtered_cc_events) and filtered_cc_events[event_index][0] < next_snapshot_start_ts:
             event_time, change, event_type = filtered_cc_events[event_index]
-            
+
             if event_type == 'engine':
                 current_active_engines += change
             elif event_type == 'queue':
                 current_queue_length += change
-            
+
             event_index += 1
-        
+
         # Convert snapshot_start_ts to datetime for recording
         snapshot_start_dt = datetime.fromtimestamp(snapshot_start_ts)
 
@@ -702,7 +785,9 @@ def process_scans(scans, full_csv):
         'scan_presets': scan_presets,
         'scan_times_by_loc': scan_times_by_loc,
         'scan_stats_by_date': scan_stats_by_date,
-        'cc_metrics': snapshot_metrics
+        'cc_metrics': snapshot_metrics,
+        'project_stats': project_stats,
+        'team_stats': team_stats,
     }
 
 
@@ -733,6 +818,10 @@ def output_analysis(data, csv_config, excel_config):
     output_scan_concurrency(daily_maxima, csv_config, excel_config)
     output_scans_by_date(data['scan_stats_by_date'], csv_config, excel_config)
     output_scans_by_week(data['scan_stats_by_date'], csv_config, excel_config)
+    output_project_stats(data['project_stats'], csv_config, excel_config)
+    output_team_stats(data['team_stats'], csv_config, excel_config)
+    output_top_projects(data['project_stats'], csv_config, excel_config)
+    output_top_teams(data['team_stats'], csv_config, excel_config)
 
 
 ### Output Functions: Handle all types of output for a specific metric type or report section
@@ -763,10 +852,10 @@ def output_summary_of_scans(data, csv_config, excel_config):
     # Create csv, if required
     if csv_config['enabled']:
         write_to_csv(['Description','Value','%'], output_data, os.path.join(csv_config['output_dir'], f'01-summary_of_scans.csv'))
-    
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'B', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'B', 4)
 
 
 def output_scan_metrics(data, csv_config, excel_config):
@@ -780,10 +869,10 @@ def output_scan_metrics(data, csv_config, excel_config):
     # Create csv, if required
     if csv_config['enabled']:
         write_to_csv(['Description','Average','Max'], output_data, os.path.join(csv_config['output_dir'], f'02-scan_metrics.csv'))
-    
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'F', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'F', 4)
 
 
 def output_scan_duration(data, csv_config, excel_config):
@@ -798,10 +887,10 @@ def output_scan_duration(data, csv_config, excel_config):
     # Create csv, if required
     if csv_config['enabled']:
         write_to_csv(['Description','Average','Max'], output_data, os.path.join(csv_config['output_dir'], f'03-scan_duration.csv'))
-    
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'J', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'J', 4)
 
 
 def output_scan_results_and_severity(data, csv_config, excel_config):
@@ -817,11 +906,13 @@ def output_scan_results_and_severity(data, csv_config, excel_config):
 
     # Create csv, if required
     if csv_config['enabled']:
-        write_to_csv(['Description','Average','Max'], output_data, os.path.join(csv_config['output_dir'], f'03-scan_duration.csv'))
-    
+        write_to_csv(['Description','Average','Max'], output_data, os.path.join(csv_config['output_dir'], f'04-scan_results_severity.csv'))
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'N', 4)
+        # Only overwrite the Value column so the pre-styled severity label column (N) is left alone
+        ws = excel_config['workbook']['Data']
+        write_to_excel(ws, [[row[1], row[2]] for row in output_data], 'O', 4)
 
 
 def output_scan_languages(data, csv_config, excel_config):
@@ -833,10 +924,10 @@ def output_scan_languages(data, csv_config, excel_config):
     # Create csv, if required
     if csv_config['enabled']:
         write_to_csv(['Language','%','Scans'], output_data, os.path.join(csv_config['output_dir'], f'05-languages.csv'))
-    
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'R', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'R', 4)
 
 
 def output_scan_submission_summary(data, csv_config, excel_config):
@@ -853,10 +944,10 @@ def output_scan_submission_summary(data, csv_config, excel_config):
     # Create csv, if required
     if csv_config['enabled']:
         write_to_csv(['Description','Value'], output_data, os.path.join(csv_config['output_dir'], f'06-scan_submissison_summary.csv'))
-    
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'V', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'V', 4)
 
 def output_day_of_week_scan_average(data, csv_config, excel_config):
     # Create the data structure to hold the various fields
@@ -873,10 +964,10 @@ def output_day_of_week_scan_average(data, csv_config, excel_config):
     # Create csv, if required
     if csv_config['enabled']:
         write_to_csv(['Day of Week','Scans','%'], output_data, os.path.join(csv_config['output_dir'], f'07-day_of_week_scan_average.csv'))
-    
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'Y', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'Y', 4)
 
 def output_scan_origins(data, csv_config, excel_config):
     # Create the data structure to hold the various fields
@@ -888,10 +979,10 @@ def output_scan_origins(data, csv_config, excel_config):
     # Create csv, if required
     if csv_config['enabled']:
         write_to_csv(['Origin','Scans','%'], output_data, os.path.join(csv_config['output_dir'], f'08-origins.csv'))
-    
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'AC', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'AC', 4)
 
 def output_scan_presets(data, csv_config, excel_config):
     # Create the data structure to hold the various fields
@@ -902,10 +993,10 @@ def output_scan_presets(data, csv_config, excel_config):
     # Create csv, if required
     if csv_config['enabled']:
         write_to_csv(['Preset','Scans','%'], output_data, os.path.join(csv_config['output_dir'], f'09-presets.csv'))
-    
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'AG', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'AG', 4)
 
 def output_scan_time_analysis(data, csv_config, excel_config):
     # Create the data structure to hold the various fields
@@ -917,11 +1008,11 @@ def output_scan_time_analysis(data, csv_config, excel_config):
 
     # Create csv, if required
     if csv_config['enabled']:
-        write_to_csv(['LOC Range','Scans','% Scans','Avg Total Time','Avg Source Pulling Time','Avg Queue Time','Avg Engine Scan Time'], output_data, os.path.join(csv_config['output_dir'], f'09-presets.csv'))
-    
+        write_to_csv(['LOC Range','Scans','% Scans','Avg Total Time','Avg Source Pulling Time','Avg Queue Time','Avg Engine Scan Time'], output_data, os.path.join(csv_config['output_dir'], f'10-scan_time_analysis.csv'))
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'AK', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'AK', 4)
 
 def output_scan_concurrency(daily_maxima, csv_config, excel_config):
     # Create the data structure to hold the various fields
@@ -932,10 +1023,10 @@ def output_scan_concurrency(daily_maxima, csv_config, excel_config):
     # Create csv, if required
     if csv_config['enabled']:
         write_to_csv(['Date','Max Actual','Max Optimal'], output_data, os.path.join(csv_config['output_dir'], f'11-concurrency_analysis.csv'))
-    
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'AS', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'AS', 4)
 
 
 def output_scans_by_date(scan_stats_by_date, csv_config, excel_config):
@@ -948,16 +1039,16 @@ def output_scans_by_date(scan_stats_by_date, csv_config, excel_config):
             format_seconds_to_timedelta(value['AVG_source_pulling_time']),format_seconds_to_timedelta(value['MAX_source_pulling_time']),
             format_seconds_to_timedelta(value['AVG_queue_time']),format_seconds_to_timedelta(value['MAX_queue_time']),
             format_seconds_to_timedelta(value['AVG_engine_scan_time']),format_seconds_to_timedelta(value['MAX_engine_scan_time'])])
-        
+
     # Create csv, if required
     if csv_config['enabled']:
         write_to_csv(['Date','Scans','No Scans','Full Scans','Incremental Scans','Sum LOC','Max LOC','Sum Failed LOC','Max Failed LOC',
             'AVG Total Scan Time','Max Total Scan Time','Avg Source Pulling Time','Max Source Pulling Time','Avg Queue Time','Max Queue Time',
             'Avg Engine Time','Max Engine Time'], output_data, os.path.join(csv_config['output_dir'], f'12-scans_by_date.csv'))
-    
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'AW', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'AW', 4)
 
 
 def output_scans_by_week(scan_stats_by_date, csv_config, excel_config):
@@ -967,7 +1058,7 @@ def output_scans_by_week(scan_stats_by_date, csv_config, excel_config):
     for date, value in scan_stats_by_date.items():
         # Calculate the Monday of the current week
         monday_of_week = date - timedelta(days=date.weekday())
-        
+
         # Initialize or update the weekly data
         if monday_of_week not in weekly_data:
             weekly_data[monday_of_week] = value.copy()
@@ -1016,21 +1107,109 @@ def output_scans_by_week(scan_stats_by_date, csv_config, excel_config):
         write_to_csv(['Week','Scans','No Scans','Full Scans','Incremental Scans','Sum LOC','Max LOC','Sum Failed LOC','Max Failed LOC',
             'AVG Total Scan Time','Max Total Scan Time','Avg Source Pulling Time','Max Source Pulling Time','Avg Queue Time','Max Queue Time',
             'Avg Engine Time','Max Engine Time'], output_data, os.path.join(csv_config['output_dir'], f'13-scans_by_week.csv'))
-    
+
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(output_data, 'BO', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'BO', 4)
+
+
+def _entity_row(name, stats, extra_leading_cols):
+    row = list(extra_leading_cols) + [
+        stats['COUNT_scans'], stats['COUNT_full_scans'], stats['COUNT_incremental_scans'], stats['PCT_incremental'],
+        stats['SUM_loc'], stats['AVG_loc'], stats['MAX_loc'], stats['SUM_failed_loc'], stats['MAX_failed_loc'],
+        stats['AVG_file_count'], stats['MAX_file_count'],
+        stats['first_scan_date'], stats['last_scan_date'], stats['active_day_count'], stats['AVG_scans_per_week'],
+    ]
+    for sev in ENTITY_SEVERITIES:
+        row += [stats[f'AVG_{sev}'], stats[f'MAX_{sev}'], stats[f'MIN_{sev}']]
+    return row
+
+
+_ENTITY_HEADER_TAIL = ['Scans', 'Full Scans', 'Incremental Scans', '% Incremental',
+                       'Total LOC', 'Avg LOC/Scan', 'Max LOC', 'Total Failed LOC', 'Max Failed LOC',
+                       'Avg File Count', 'Max File Count', 'First Scan', 'Last Scan', 'Active Days',
+                       'Avg Scans/Week']
+for _sev in ['Critical', 'High', 'Medium', 'Low', 'Info']:
+    _ENTITY_HEADER_TAIL += [f'{_sev} Avg', f'{_sev} Max', f'{_sev} Min']
+
+
+def output_project_stats(project_stats, csv_config, excel_config):
+    output_data = []
+    for name, stats in sorted(project_stats.items(), key=lambda kv: kv[1]['COUNT_scans'], reverse=True):
+        output_data.append(_entity_row(name, stats, [name, stats['team_name']]))
+
+    if csv_config['enabled']:
+        header = ['Logical Project', 'Team'] + _ENTITY_HEADER_TAIL
+        write_to_csv(header, output_data, os.path.join(csv_config['output_dir'], '14-project_stats.csv'))
+
+    if excel_config['enabled']:
+        col_info = excel_config['proj_cols']
+        ws = excel_config['workbook']['Projects']
+        write_to_excel(ws, output_data, get_column_letter(col_info['identity_col_start']), col_info['detail_data_start'])
+
+
+def output_team_stats(team_stats, csv_config, excel_config):
+    output_data = []
+    for name, stats in sorted(team_stats.items(), key=lambda kv: kv[1]['COUNT_scans'], reverse=True):
+        unique_projects = len(stats['unique_projects'])
+        avg_scans_per_project = stats['COUNT_scans'] / unique_projects if unique_projects else 0
+        output_data.append(_entity_row(name, stats, [name, unique_projects, avg_scans_per_project]))
+
+    if csv_config['enabled']:
+        header = ['Team', 'Unique Projects', 'Avg Scans/Project'] + _ENTITY_HEADER_TAIL
+        write_to_csv(header, output_data, os.path.join(csv_config['output_dir'], '15-team_stats.csv'))
+
+    if excel_config['enabled']:
+        col_info = excel_config['team_cols']
+        ws = excel_config['workbook']['Teams']
+        write_to_excel(ws, output_data, get_column_letter(col_info['identity_col_start']), col_info['detail_data_start'])
+
+
+def output_top_projects(project_stats, csv_config, excel_config):
+    by_volume = sorted(project_stats.items(), key=lambda kv: kv[1]['COUNT_scans'], reverse=True)[:TOP_N_ENTITIES]
+    by_size = sorted(project_stats.items(), key=lambda kv: kv[1]['SUM_loc'], reverse=True)[:TOP_N_ENTITIES]
+    vol_data = [[name, s['team_name'], s['COUNT_scans']] for name, s in by_volume]
+    size_data = [[name, s['team_name'], s['SUM_loc']] for name, s in by_size]
+
+    if csv_config['enabled']:
+        write_to_csv(['Logical Project', 'Team', 'Scans'], vol_data,
+                     os.path.join(csv_config['output_dir'], '16-top_projects_by_volume.csv'))
+        write_to_csv(['Logical Project', 'Team', 'Total LOC'], size_data,
+                     os.path.join(csv_config['output_dir'], '17-top_projects_by_size.csv'))
+
+    if excel_config['enabled']:
+        col_info = excel_config['proj_cols']
+        ws = excel_config['workbook']['Projects']
+        write_to_excel(ws, vol_data, get_column_letter(col_info['vol_col_start']), col_info['vol_data_start'])
+        write_to_excel(ws, size_data, get_column_letter(col_info['size_col_start']), col_info['size_data_start'])
+
+
+def output_top_teams(team_stats, csv_config, excel_config):
+    by_volume = sorted(team_stats.items(), key=lambda kv: kv[1]['COUNT_scans'], reverse=True)[:TOP_N_ENTITIES]
+    by_size = sorted(team_stats.items(), key=lambda kv: kv[1]['SUM_loc'], reverse=True)[:TOP_N_ENTITIES]
+    vol_data = [[name, s['COUNT_scans']] for name, s in by_volume]
+    size_data = [[name, s['SUM_loc']] for name, s in by_size]
+
+    if csv_config['enabled']:
+        write_to_csv(['Team', 'Scans'], vol_data, os.path.join(csv_config['output_dir'], '18-top_teams_by_volume.csv'))
+        write_to_csv(['Team', 'Total LOC'], size_data, os.path.join(csv_config['output_dir'], '19-top_teams_by_size.csv'))
+
+    if excel_config['enabled']:
+        col_info = excel_config['team_cols']
+        ws = excel_config['workbook']['Teams']
+        write_to_excel(ws, vol_data, get_column_letter(col_info['vol_col_start']), col_info['vol_data_start'])
+        write_to_excel(ws, size_data, get_column_letter(col_info['size_col_start']), col_info['size_data_start'])
 
 
 ### Main
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process scans and output CSV files if requested")
-    parser.add_argument("input-file", type=str, help="JSON file containing scan data")
+    parser.add_argument("input_file", type=str, help="JSON file containing scan data")
     parser.add_argument("--customer", type=str, default="", help="Optional name of the customer")
     parser.add_argument("--cc-snapshot", type=int, default=CC_SNAPSHOT_SECONDS, help="Interval in seconds for capturing concurrency snapshots (default: %(default)s)")
     parser.add_argument("--csv", action="store_true", help="Generate CSV output files")
     parser.add_argument("--full-data", action="store_true", help="Generate CSV output of complete scan data")
-    parser.add_argument("--excel", nargs='?', const=DEFAULT_EXCEL_TEMPLATE, default=None, help="Template file for Excel export")
+    parser.add_argument("--excel", action="store_true", help="Generate an Excel (.xlsx) report -- built from scratch, no template file needed")
 
     args = parser.parse_args()
 
@@ -1041,13 +1220,9 @@ if __name__ == "__main__":
 
     input_file = args.input_file
     output_name = args.customer.replace(" ", "_") if args.customer else os.path.splitext(os.path.basename(input_file))[0]
-    excel_template = args.excel
-    
+
     if args.cc_snapshot:
         CC_SNAPSHOT_SECONDS = args.cc_snapshot
-
-    if excel_template == '':
-        parser.error("No Excel template file is defined. Either provide a default in the script or define as '--excel=template_file.xlsx'")
 
     # Define the output directory using the optional name if provided
     start_time = datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -1073,7 +1248,10 @@ if __name__ == "__main__":
     }
     excel_config = {
         'enabled': True if args.excel else False,
-        'excel_target': excel_target_full_path
+        'excel_target': excel_target_full_path,
+        'workbook': None,
+        'proj_cols': None,
+        'team_cols': None,
     }
 
     # If we are creating any files, create the output directory
@@ -1088,38 +1266,14 @@ if __name__ == "__main__":
             print(f"Error creating directory: {e}")
             exit(1)
 
-    # If we're exporting to Excel...
+    # If we're exporting to Excel, build the workbook from scratch (no template file involved)
     if excel_config['enabled']:
-        # Make sure we have the required libraries
-        if not  xl_available:
-            parser.error("--excel requires pandas and openpyxl libraries: 'pip install pandas openpyxl'")
-        # Make sure the template file exists
-        if not os.path.isfile(excel_template):
-            print(f"Error: The file '{excel_template}' does not exist.")
-            exit(1)
-        # Open the template workbook to validate that it is an Excel file
-        try:
-            workbook = load_workbook(excel_template)
-        except InvalidFileException:
-            print(f"Error: The file '{excel_template}' is not a valid Excel file or is corrupted.")
-            exit(1)
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
-            exit(1)
-        # Copy the template in order to create the target Excel workbook
-        try:
-            shutil.copy(excel_template, excel_target_full_path)
-        except Exception as e:
-            print(f"Error occurred: {e}")
-        # Open the new Excel workbook
-        try:
-            workbook = load_workbook(excel_target_full_path)
-        except InvalidFileException:
-            print(f"Error: The file '{excel_filename}' is not a valid Excel file or is corrupted.")
-            exit(1)
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
-            exit(1)
+        if not xl_available:
+            parser.error("--excel requires the openpyxl and Pillow libraries: 'pip install openpyxl Pillow'")
+        workbook, proj_cols, team_cols = workbook_builder.create_workbook()
+        excel_config['workbook'] = workbook
+        excel_config['proj_cols'] = proj_cols
+        excel_config['team_cols'] = team_cols
 
     full_csv['field_names'], scans = ingest_file(input_file)
 
@@ -1128,8 +1282,8 @@ if __name__ == "__main__":
     output_analysis(processed_data, csv_config, excel_config)
 
     # If we exported to Excel, save the workbook
-    if(excel_config['enabled']):
-        workbook.save(excel_target_full_path)
+    if excel_config['enabled']:
+        excel_config['workbook'].save(excel_target_full_path)
 
     end_time = datetime.now().strftime('%Y%m%d-%H%M%S')
     elapsed_time = format_seconds_to_hms(calculate_time_difference(start_time, end_time))
