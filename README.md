@@ -1,3 +1,48 @@
+# fastEHC
+
+Processes a large Checkmarx SAST OData `Scans` export (`--%24select`/`--%24expand` JSON dump
+from `/CxWebInterface/odata/v1/Scans`) into Engineering Health Check metrics: scan volume,
+duration/queue timing, results by severity, language and preset mix, concurrency, and
+size/volume/severity breakdowns by logical project and by team.
+
+Output can be CSV files, a fully-styled Excel workbook, or both.
+
+## Requirements
+
+```
+pip install -r requirements.txt
+```
+
+The Excel report is generated entirely from code (`workbook_builder.py` + `cx_theme.py`) --
+there is no `.xlsx` template file to keep in sync. The Checkmarx wordmark used in the report
+is bundled under `assets/`.
+
+## Usage
+
+```
+python fastEHC.py <input-file> [--customer NAME] [--csv] [--full-data] [--excel] [--cc-snapshot SECONDS]
+```
+
+- `<input-file>`: the OData JSON export.
+- `--customer`: optional name used to label the output folder/workbook.
+- `--csv`: write one CSV per metric section to `ehc_output_<customer>_<timestamp>/`.
+- `--full-data`: also write a CSV of every raw scan record (for ad-hoc analysis).
+- `--excel`: build `EHC-<customer>.xlsx` in the same output folder.
+- `--cc-snapshot`: interval (seconds) for the scan-concurrency simulation (default 15; smaller is more precise but slower).
+
+At least one of `--csv`, `--full-data`, or `--excel` is required.
+
+## Excel report layout
+
+- **Summary** -- headline metrics, pulled from `Data` via formulas.
+- **Projects** / **Teams** -- scan volume, size, and severity (avg/max/min) grouped by
+  logical project (branch/suffix normalized off the raw `ProjectName`) and by team, each
+  with a Top-15-by-volume and Top-15-by-size cut for charting.
+- **Scan Time Analysis** -- scan duration broken down by LOC-size bucket.
+- **Charts** -- daily/weekly scan summary, concurrency, language mix, size/origin/preset
+  breakdowns, results by severity, and project/team leaderboards.
+- **Data** -- the raw per-section tables everything else reads from.
+
 ## License
 
 MIT License
