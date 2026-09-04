@@ -17,6 +17,8 @@ from datetime import datetime, timedelta
 from dateutil.parser import parse as parse_date
 from collections import defaultdict
 import math
+import statistics
+import bisect
 import csv
 
 try:
@@ -40,13 +42,25 @@ except ImportError:
 import pprint
 
 
+### Wraps a binary file object so that ijson's internal .read() calls advance a tqdm byte progress bar
+class _ProgressFileReader:
+    def __init__(self, fileobj, pbar):
+        self._fileobj = fileobj
+        self._pbar = pbar
+
+    def read(self, size=-1):
+        chunk = self._fileobj.read(size)
+        self._pbar.update(len(chunk))
+        return chunk
+
+
 ### Ingest the data file
 def ingest_file(file_path):
-    print("Reading data file...", end="", flush=True)
+    file_size = os.path.getsize(file_path)
     scans = []
     tmp_field_names = []
     with open(file_path, 'rb') as file:
-        # Extract field names from the @odata.context string
+        # Extract field names from the @odata.context string (a small read near the start of the file)
         context = ijson.items(file, '@odata.context')
         context_str = next(context)
         pattern = r"#Scans\((.*?)\)"
@@ -57,12 +71,20 @@ def ingest_file(file_path):
             # Adjust the field names here, using tmp_field_names
             field_names = [field.replace('(LanguageName', '') if 'ScannedLanguages' in field else field for field in tmp_field_names]
 
-        # Reset file pointer and extract scan items
+        # Reset file pointer and extract scan items, showing progress by bytes read since
+        # this is a full pass over the (potentially very large) file
         file.seek(0)
-        for scan in ijson.items(file, 'value.item'):
-            scans.append(scan)
+        if tqdm_available:
+            with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024, desc="Reading data file") as pbar:
+                reader = _ProgressFileReader(file, pbar)
+                for scan in ijson.items(reader, 'value.item'):
+                    scans.append(scan)
+        else:
+            print("Reading data file...", end="", flush=True)
+            for scan in ijson.items(file, 'value.item'):
+                scans.append(scan)
+            print("completed!")
 
-    print("completed!")
     return field_names, scans
 
 
@@ -164,18 +186,27 @@ def _finalize_entity_stats(stats, overall_total_weeks):
 
 
 ### Output a data structure to the Excel workbook starting at the indicated cell (e.g., J4)
-def write_to_excel(ws, data, start_col, start_row):
+# `formats` is optional: either a flat list of one number_format string (or None) per
+# column, applied to every row, or a list of lists matching `data`'s shape exactly for
+# rows whose columns have mixed types (e.g. a description column followed by a date on
+# one row and a plain count on the next).
+def write_to_excel(ws, data, start_col, start_row, formats=None):
     try:
         # Convert start_col from letters to a numerical index
         start_col_index = column_index_from_string(start_col)
+        per_row_formats = bool(formats) and isinstance(formats[0], (list, tuple))
 
         for row_offset, row_data in enumerate(data, start=0):
+            row_formats = formats[row_offset] if per_row_formats else formats
+            is_alt_row = row_offset % 2 == 1
             for col_offset, value in enumerate(row_data, start=0):
                 # Calculate actual row and column indices
                 row_idx = start_row + row_offset
                 col_idx = start_col_index + col_offset
                 cell = ws.cell(row=row_idx, column=col_idx, value=value)
-                cx_theme.style_body_cell(cell)
+                cx_theme.style_body_cell(cell, alt=is_alt_row)
+                if row_formats and col_offset < len(row_formats) and row_formats[col_offset]:
+                    cell.number_format = row_formats[col_offset]
     except IOError as e:
         print(f"IOError when writing to Excel file: {e}")
         return
@@ -822,6 +853,8 @@ def output_analysis(data, csv_config, excel_config):
     output_team_stats(data['team_stats'], csv_config, excel_config)
     output_top_projects(data['project_stats'], csv_config, excel_config)
     output_top_teams(data['team_stats'], csv_config, excel_config)
+    output_project_distribution(data['project_stats'], csv_config, excel_config)
+    output_team_distribution(data['team_stats'], csv_config, excel_config)
 
 
 ### Output Functions: Handle all types of output for a specific metric type or report section
@@ -855,7 +888,16 @@ def output_summary_of_scans(data, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'B', 4)
+        I, P, D = cx_theme.FMT_INT, cx_theme.FMT_PCT, cx_theme.FMT_DATE
+        formats = [
+            [None, D], [None, D], [None, I], [None, I], [None, I],
+            [None, I], [None, I],
+            [None, I, P], [None, I, P], [None, I, P],
+            [None, I, P], [None, I, P], [None, I, P],
+            [None, I, P], [None, I, P], [None, I, P],
+            [None, I],
+        ]
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'B', 4, formats)
 
 
 def output_scan_metrics(data, csv_config, excel_config):
@@ -872,7 +914,8 @@ def output_scan_metrics(data, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'F', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'F', 4,
+                        [None, cx_theme.FMT_INT, cx_theme.FMT_INT])
 
 
 def output_scan_duration(data, csv_config, excel_config):
@@ -890,7 +933,8 @@ def output_scan_duration(data, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'J', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'J', 4,
+                        [None, cx_theme.FMT_DURATION, cx_theme.FMT_DURATION])
 
 
 def output_scan_results_and_severity(data, csv_config, excel_config):
@@ -912,7 +956,8 @@ def output_scan_results_and_severity(data, csv_config, excel_config):
     if excel_config['enabled']:
         # Only overwrite the Value column so the pre-styled severity label column (N) is left alone
         ws = excel_config['workbook']['Data']
-        write_to_excel(ws, [[row[1], row[2]] for row in output_data], 'O', 4)
+        write_to_excel(ws, [[row[1], row[2]] for row in output_data], 'O', 4,
+                        [cx_theme.FMT_INT, cx_theme.FMT_INT])
 
 
 def output_scan_languages(data, csv_config, excel_config):
@@ -927,7 +972,8 @@ def output_scan_languages(data, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'R', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'R', 4,
+                        [None, cx_theme.FMT_PCT, cx_theme.FMT_INT])
 
 
 def output_scan_submission_summary(data, csv_config, excel_config):
@@ -947,7 +993,9 @@ def output_scan_submission_summary(data, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'V', 4)
+        D2, I, D = cx_theme.FMT_DECIMAL2, cx_theme.FMT_INT, cx_theme.FMT_DATE
+        formats = [[None, D2], [None, D2], [None, D2], [None, D2], [None, I], [None, D]]
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'V', 4, formats)
 
 def output_day_of_week_scan_average(data, csv_config, excel_config):
     # Create the data structure to hold the various fields
@@ -967,7 +1015,8 @@ def output_day_of_week_scan_average(data, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'Y', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'Y', 4,
+                        [None, cx_theme.FMT_INT, cx_theme.FMT_PCT])
 
 def output_scan_origins(data, csv_config, excel_config):
     # Create the data structure to hold the various fields
@@ -982,7 +1031,8 @@ def output_scan_origins(data, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'AC', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'AC', 4,
+                        [None, cx_theme.FMT_INT, cx_theme.FMT_PCT])
 
 def output_scan_presets(data, csv_config, excel_config):
     # Create the data structure to hold the various fields
@@ -996,7 +1046,8 @@ def output_scan_presets(data, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'AG', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'AG', 4,
+                        [None, cx_theme.FMT_INT, cx_theme.FMT_PCT])
 
 def output_scan_time_analysis(data, csv_config, excel_config):
     # Create the data structure to hold the various fields
@@ -1012,7 +1063,9 @@ def output_scan_time_analysis(data, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'AK', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'AK', 4,
+                        [None, cx_theme.FMT_INT, cx_theme.FMT_PCT, cx_theme.FMT_DURATION,
+                         cx_theme.FMT_DURATION, cx_theme.FMT_DURATION, cx_theme.FMT_DURATION])
 
 def output_scan_concurrency(daily_maxima, csv_config, excel_config):
     # Create the data structure to hold the various fields
@@ -1026,7 +1079,8 @@ def output_scan_concurrency(daily_maxima, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'AS', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'AS', 4,
+                        [cx_theme.FMT_DATE, cx_theme.FMT_INT, cx_theme.FMT_INT])
 
 
 def output_scans_by_date(scan_stats_by_date, csv_config, excel_config):
@@ -1048,7 +1102,7 @@ def output_scans_by_date(scan_stats_by_date, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'AW', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'AW', 4, _SCANS_BY_PERIOD_FORMATS)
 
 
 def output_scans_by_week(scan_stats_by_date, csv_config, excel_config):
@@ -1092,13 +1146,13 @@ def output_scans_by_week(scan_stats_by_date, csv_config, excel_config):
             data['SUM_failed_loc'],
             data['MAX_failed_loc'],
             format_seconds_to_timedelta(avg_total_scan_time),
-            data['MAX_total_scan_time'],
+            format_seconds_to_timedelta(data['MAX_total_scan_time']),
             format_seconds_to_timedelta(avg_source_pulling_time),
-            data['MAX_source_pulling_time'],
+            format_seconds_to_timedelta(data['MAX_source_pulling_time']),
             format_seconds_to_timedelta(avg_queue_time),
-            data['MAX_queue_time'],
+            format_seconds_to_timedelta(data['MAX_queue_time']),
             format_seconds_to_timedelta(avg_engine_scan_time),
-            data['MAX_engine_scan_time']
+            format_seconds_to_timedelta(data['MAX_engine_scan_time'])
         ]
         output_data.append(row)
 
@@ -1110,7 +1164,7 @@ def output_scans_by_week(scan_stats_by_date, csv_config, excel_config):
 
     # Output to Excel, if required
     if excel_config['enabled']:
-        write_to_excel(excel_config['workbook']['Data'], output_data, 'BO', 4)
+        write_to_excel(excel_config['workbook']['Data'], output_data, 'BO', 4, _SCANS_BY_PERIOD_FORMATS)
 
 
 def _entity_row(name, stats, extra_leading_cols):
@@ -1125,12 +1179,29 @@ def _entity_row(name, stats, extra_leading_cols):
     return row
 
 
+# Shared column shape of output_scans_by_date/output_scans_by_week: Date/Week, then
+# Scans/NoScans/FullScans/IncrementalScans/LOC sums+maxes (int), then 4 pairs of
+# avg/max duration values.
+_SCANS_BY_PERIOD_FORMATS = (
+    [cx_theme.FMT_DATE] + [cx_theme.FMT_INT] * 8 + [cx_theme.FMT_DURATION] * 8
+)
+
 _ENTITY_HEADER_TAIL = ['Scans', 'Full Scans', 'Incremental Scans', '% Incremental',
                        'Total LOC', 'Avg LOC/Scan', 'Max LOC', 'Total Failed LOC', 'Max Failed LOC',
                        'Avg File Count', 'Max File Count', 'First Scan', 'Last Scan', 'Active Days',
                        'Avg Scans/Week']
 for _sev in ['Critical', 'High', 'Medium', 'Low', 'Info']:
     _ENTITY_HEADER_TAIL += [f'{_sev} Avg', f'{_sev} Max', f'{_sev} Min']
+
+# Number formats for the entity (project/team) detail tables' shared tail columns
+# (everything after the identity columns, which vary between Projects and Teams).
+_ENTITY_FORMAT_TAIL = (
+    [cx_theme.FMT_INT, cx_theme.FMT_INT, cx_theme.FMT_INT, cx_theme.FMT_PCT,
+     cx_theme.FMT_INT, cx_theme.FMT_INT, cx_theme.FMT_INT, cx_theme.FMT_INT, cx_theme.FMT_INT,
+     cx_theme.FMT_INT, cx_theme.FMT_INT, cx_theme.FMT_DATE, cx_theme.FMT_DATE, cx_theme.FMT_INT,
+     cx_theme.FMT_DECIMAL2]
+    + [cx_theme.FMT_DECIMAL2, cx_theme.FMT_INT, cx_theme.FMT_INT] * len(ENTITY_SEVERITIES)
+)
 
 
 def output_project_stats(project_stats, csv_config, excel_config):
@@ -1145,7 +1216,8 @@ def output_project_stats(project_stats, csv_config, excel_config):
     if excel_config['enabled']:
         col_info = excel_config['proj_cols']
         ws = excel_config['workbook']['Projects']
-        write_to_excel(ws, output_data, get_column_letter(col_info['identity_col_start']), col_info['detail_data_start'])
+        formats = [None, None] + _ENTITY_FORMAT_TAIL
+        write_to_excel(ws, output_data, get_column_letter(col_info['identity_col_start']), col_info['detail_data_start'], formats)
 
 
 def output_team_stats(team_stats, csv_config, excel_config):
@@ -1162,7 +1234,8 @@ def output_team_stats(team_stats, csv_config, excel_config):
     if excel_config['enabled']:
         col_info = excel_config['team_cols']
         ws = excel_config['workbook']['Teams']
-        write_to_excel(ws, output_data, get_column_letter(col_info['identity_col_start']), col_info['detail_data_start'])
+        formats = [None, cx_theme.FMT_INT, cx_theme.FMT_DECIMAL2] + _ENTITY_FORMAT_TAIL
+        write_to_excel(ws, output_data, get_column_letter(col_info['identity_col_start']), col_info['detail_data_start'], formats)
 
 
 def output_top_projects(project_stats, csv_config, excel_config):
@@ -1180,8 +1253,10 @@ def output_top_projects(project_stats, csv_config, excel_config):
     if excel_config['enabled']:
         col_info = excel_config['proj_cols']
         ws = excel_config['workbook']['Projects']
-        write_to_excel(ws, vol_data, get_column_letter(col_info['vol_col_start']), col_info['vol_data_start'])
-        write_to_excel(ws, size_data, get_column_letter(col_info['size_col_start']), col_info['size_data_start'])
+        write_to_excel(ws, vol_data, get_column_letter(col_info['vol_col_start']), col_info['vol_data_start'],
+                        [None, None, cx_theme.FMT_INT])
+        write_to_excel(ws, size_data, get_column_letter(col_info['size_col_start']), col_info['size_data_start'],
+                        [None, None, cx_theme.FMT_INT])
 
 
 def output_top_teams(team_stats, csv_config, excel_config):
@@ -1197,8 +1272,120 @@ def output_top_teams(team_stats, csv_config, excel_config):
     if excel_config['enabled']:
         col_info = excel_config['team_cols']
         ws = excel_config['workbook']['Teams']
-        write_to_excel(ws, vol_data, get_column_letter(col_info['vol_col_start']), col_info['vol_data_start'])
-        write_to_excel(ws, size_data, get_column_letter(col_info['size_col_start']), col_info['size_data_start'])
+        write_to_excel(ws, vol_data, get_column_letter(col_info['vol_col_start']), col_info['vol_data_start'],
+                        [None, cx_theme.FMT_INT])
+        write_to_excel(ws, size_data, get_column_letter(col_info['size_col_start']), col_info['size_data_start'],
+                        [None, cx_theme.FMT_INT])
+
+
+### Compute mean/median/stdev/min/p25/p75/max for one list of values
+def _percentile(sorted_values, pct):
+    if not sorted_values:
+        return 0
+    k = (len(sorted_values) - 1) * pct
+    f, c = math.floor(k), math.ceil(k)
+    if f == c:
+        return sorted_values[int(k)]
+    return sorted_values[f] * (c - k) + sorted_values[c] * (k - f)
+
+
+def _summary_stats(values):
+    values = sorted(v for v in values if v is not None)
+    if not values:
+        return {'mean': 0, 'median': 0, 'stdev': 0, 'min': 0, 'p25': 0, 'p75': 0, 'max': 0}
+    return {
+        'mean': statistics.mean(values),
+        'median': statistics.median(values),
+        'stdev': statistics.stdev(values) if len(values) > 1 else 0,
+        'min': values[0],
+        'p25': _percentile(values, 0.25),
+        'p75': _percentile(values, 0.75),
+        'max': values[-1],
+    }
+
+
+### Bin a list of values into a histogram. Uses log-scaled bins when the data spans
+# more than two orders of magnitude (typical for scan volume/LOC, where a handful of
+# huge outliers would otherwise collapse everything else into a single linear bin).
+def _histogram_bins(values, num_bins=10):
+    values = [v for v in values if v is not None]
+    if not values:
+        return [("(no data)", 0)] + [("", 0)] * (num_bins - 1)
+    lo, hi = min(values), max(values)
+    if lo == hi:
+        return [(f"{lo:,.0f}", len(values))] + [("", 0)] * (num_bins - 1)
+
+    use_log = lo > 0 and hi / lo > 100
+    if use_log:
+        log_lo, log_hi = math.log10(lo), math.log10(hi)
+        edges = [10 ** (log_lo + (log_hi - log_lo) * i / num_bins) for i in range(num_bins + 1)]
+    else:
+        edges = [lo + (hi - lo) * i / num_bins for i in range(num_bins + 1)]
+
+    counts = [0] * num_bins
+    for v in values:
+        idx = max(0, min(bisect.bisect_right(edges, v) - 1, num_bins - 1))
+        counts[idx] += 1
+
+    labels = [f"{edges[i]:,.0f}-{edges[i + 1]:,.0f}" for i in range(num_bins)]
+    return list(zip(labels, counts))
+
+
+def _entity_distribution_values(stats_dict):
+    return {
+        'Scans': [s['COUNT_scans'] for s in stats_dict.values()],
+        'Total LOC': [s['SUM_loc'] for s in stats_dict.values()],
+        'Avg LOC/Scan': [s['AVG_loc'] for s in stats_dict.values()],
+        '% Incremental': [s['PCT_incremental'] for s in stats_dict.values()],
+        'Active Days': [s['active_day_count'] for s in stats_dict.values()],
+        'Avg Scans/Week': [s['AVG_scans_per_week'] for s in stats_dict.values()],
+        'Critical Avg': [s['AVG_critical'] for s in stats_dict.values()],
+        'High Avg': [s['AVG_high'] for s in stats_dict.values()],
+        'Medium Avg': [s['AVG_medium'] for s in stats_dict.values()],
+        'Low Avg': [s['AVG_low'] for s in stats_dict.values()],
+        'Info Avg': [s['AVG_info'] for s in stats_dict.values()],
+    }
+
+
+def _output_distribution(stats_dict, csv_config, excel_config, sheet_name, col_info_key, csv_filenames):
+    values_by_metric = _entity_distribution_values(stats_dict)
+
+    stats_rows = []
+    for metric in workbook_builder.DISTRIBUTION_METRICS:
+        s = _summary_stats(values_by_metric[metric])
+        stats_rows.append([metric, s['mean'], s['median'], s['stdev'], s['min'], s['p25'], s['p75'], s['max']])
+
+    scans_bins = [list(b) for b in _histogram_bins(values_by_metric['Scans'])]
+    loc_bins = [list(b) for b in _histogram_bins(values_by_metric['Total LOC'])]
+
+    if csv_config['enabled']:
+        write_to_csv(workbook_builder.DISTRIBUTION_STAT_COLS, stats_rows,
+                     os.path.join(csv_config['output_dir'], csv_filenames[0]))
+        write_to_csv(['Range', 'Count'], scans_bins, os.path.join(csv_config['output_dir'], csv_filenames[1]))
+        write_to_csv(['Range', 'Count'], loc_bins, os.path.join(csv_config['output_dir'], csv_filenames[2]))
+
+    if excel_config['enabled']:
+        col_info = excel_config[col_info_key]
+        ws = excel_config['workbook'][sheet_name]
+        D2 = cx_theme.FMT_DECIMAL2
+        write_to_excel(ws, stats_rows, get_column_letter(col_info['dist_col_start']),
+                        col_info['dist_stats_data_start'], [None, D2, D2, D2, D2, D2, D2, D2])
+        write_to_excel(ws, scans_bins, get_column_letter(col_info['dist_col_start']),
+                        col_info['dist_scans_hist_data_start'], [None, cx_theme.FMT_INT])
+        write_to_excel(ws, loc_bins, get_column_letter(col_info['dist_col_start']),
+                        col_info['dist_loc_hist_data_start'], [None, cx_theme.FMT_INT])
+
+
+def output_project_distribution(project_stats, csv_config, excel_config):
+    _output_distribution(project_stats, csv_config, excel_config, 'Projects', 'proj_cols',
+                          ['20-project_distribution_stats.csv', '21-project_scans_histogram.csv',
+                           '22-project_loc_histogram.csv'])
+
+
+def output_team_distribution(team_stats, csv_config, excel_config):
+    _output_distribution(team_stats, csv_config, excel_config, 'Teams', 'team_cols',
+                          ['23-team_distribution_stats.csv', '24-team_scans_histogram.csv',
+                           '25-team_loc_histogram.csv'])
 
 
 ### Main

@@ -24,6 +24,8 @@ VELOCITY_BLUE = "006BD5"
 VIOLET_TINT_20 = "E4D9FE"
 VIOLET_TINT_40 = "C9B3FD"
 VIOLET_TINT_60 = "AE8CFC"
+# A subtler ~8% tint, distinct from the 20% header tint, used only for zebra striping
+VIOLET_TINT_08 = "F3EEFE"
 
 # Brand guidelines specify these exact severity colors
 SEVERITY_COLORS = {
@@ -43,6 +45,9 @@ HEADER_FONT = Font(name=FONT_NAME, color=CORE_MIDNIGHT, bold=True, size=10)
 HEADER_FILL = PatternFill(start_color=VIOLET_TINT_20, end_color=VIOLET_TINT_20, fill_type="solid")
 BODY_FONT = Font(name=FONT_NAME, color=CORE_MIDNIGHT, size=10)
 BODY_FILL = PatternFill(start_color=CLOUD_WHITE, end_color=CLOUD_WHITE, fill_type="solid")
+# Every other data row gets a faint violet tint instead of solid Cloud White, for
+# the zebra-striped readability the old template had.
+BODY_FILL_ALT = PatternFill(start_color=VIOLET_TINT_08, end_color=VIOLET_TINT_08, fill_type="solid")
 TITLE_FONT = Font(name=FONT_NAME, color=QUANTUM_VIOLET, bold=True, size=13)
 NOTE_FONT = Font(name=FONT_NAME, italic=True, color="808080", size=9)
 
@@ -51,6 +56,15 @@ CHART_PALETTE = [QUANTUM_VIOLET, VELOCITY_BLUE, SIGNAL_ORANGE,
                   VIOLET_TINT_60, VIOLET_TINT_40, VIOLET_TINT_20]
 
 THIN_BORDER = Border(*(Side(style="thin", color="D9D9D9"),) * 4)
+
+# Number formats -- the old template baked these into its cells; since the workbook is
+# now built from scratch, every numeric cell needs its format set explicitly or Excel
+# falls back to General (raw decimals for percentages, fractional days for durations).
+FMT_INT = '#,##0'
+FMT_DECIMAL2 = '#,##0.00'
+FMT_PCT = '0.0%'
+FMT_DATE = 'm/d/yyyy'
+FMT_DURATION = '[h]:mm:ss'
 
 _ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 LOGO_PATH = os.path.join(_ASSET_DIR, "Logo_-_Quantum_Violet.png")
@@ -76,9 +90,9 @@ def style_header_cell(cell):
     cell.fill = HEADER_FILL
 
 
-def style_body_cell(cell):
+def style_body_cell(cell, alt=False):
     cell.font = BODY_FONT
-    cell.fill = BODY_FILL
+    cell.fill = BODY_FILL_ALT if alt else BODY_FILL
 
 
 def style_note_cell(cell):

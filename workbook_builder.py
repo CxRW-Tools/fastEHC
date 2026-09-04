@@ -18,6 +18,14 @@ SIZE_COLS = ["Total LOC", "Avg LOC/Scan", "Max LOC", "Total Failed LOC", "Max Fa
              "Avg File Count", "Max File Count"]
 ACTIVITY_COLS = ["First Scan", "Last Scan", "Active Days", "Avg Scans/Week"]
 
+# Metrics covered by the "Overall Distribution" stats table (mean/median/etc across
+# all projects or all teams) -- matches the keys fastEHC.py's _distribution_stats()
+# produces, in display order.
+DISTRIBUTION_METRICS = ["Scans", "Total LOC", "Avg LOC/Scan", "% Incremental", "Active Days",
+                         "Avg Scans/Week", "Critical Avg", "High Avg", "Medium Avg", "Low Avg", "Info Avg"]
+DISTRIBUTION_STAT_COLS = ["Metric", "Mean", "Median", "Std Dev", "Min", "P25", "P75", "Max"]
+HISTOGRAM_BIN_COUNT = 10
+
 # openpyxl defaults every Bar/LineChart's axis IDs to the same values (10/100),
 # which silently corrupts multiple such charts sharing a workbook on save/reload
 # -- the axIds collide and one chart's series data gets dropped entirely. Every
@@ -136,9 +144,15 @@ def _build_summary_sheet(wb):
         theme.style_header_cell(ws[coord])
         ws[coord] = text
 
-    def formula(coord, f):
-        theme.style_body_cell(ws[coord])
-        ws[coord] = f
+    def formula(coord, f, number_format=None):
+        cell = ws[coord]
+        theme.style_body_cell(cell)
+        cell.value = f
+        if number_format:
+            cell.number_format = number_format
+
+    FI, FP, FDT, FDU, FD2 = (theme.FMT_INT, theme.FMT_PCT, theme.FMT_DATE, theme.FMT_DURATION,
+                              theme.FMT_DECIMAL2)
 
     # ---- top-level section banners ----
     group("B2", "Scan Metrics")
@@ -154,15 +168,16 @@ def _build_summary_sheet(wb):
               "Scans with Critical Results", "Scans with High Results", "Scans with Medium Results",
               "Scans with Low Results", "Scans with Informational Results", "Scans with Zero Results",
               "Unique Projects Scanned"]
+    # Rows 5-6 (Start/End Date) get a date format; every other row here is a plain count.
     for i, label in enumerate(labels):
         row = 5 + i
         theme.style_body_cell(ws[f"B{row}"])
         ws[f"B{row}"] = label
-        formula(f"C{row}", f"=Data!C{row - 1}")
-    formula("D10", "=C10/C9")
-    formula("D11", "=C11/C9")
+        formula(f"C{row}", f"=Data!C{row - 1}", FDT if row in (5, 6) else FI)
+    formula("D10", "=C10/C9", FP)
+    formula("D11", "=C11/C9", FP)
     for row in range(12, 20):
-        formula(f"D{row}", f"=Data!D{row - 1}")
+        formula(f"D{row}", f"=Data!D{row - 1}", FP)
 
     # ---- Language & Size (F4:H26) ----
     for coord, text in [("F4", "Language"), ("G4", "# of Scans "), ("H4", "% Scans")]:
@@ -174,8 +189,8 @@ def _build_summary_sheet(wb):
         row = 5 + i
         theme.style_body_cell(ws[f"F{row}"])
         ws[f"F{row}"] = lang
-        formula(f"G{row}", f'=_xlfn.IFNA(VLOOKUP($F{row},Data!$R$4:$T$28,3,FALSE),"")')
-        formula(f"H{row}", f'=_xlfn.IFNA(VLOOKUP($F{row},Data!$R$4:$T$28,2,FALSE),"")')
+        formula(f"G{row}", f'=_xlfn.IFNA(VLOOKUP($F{row},Data!$R$4:$T$28,3,FALSE),"")', FI)
+        formula(f"H{row}", f'=_xlfn.IFNA(VLOOKUP($F{row},Data!$R$4:$T$28,2,FALSE),"")', FP)
 
     # ---- Scanning Behavior: Scan Submission Summary (J4:K10) ----
     for coord, text in [("J4", "Scan Submission Summary"), ("K4", "Values")]:
@@ -187,7 +202,8 @@ def _build_summary_sheet(wb):
         row = 5 + i
         theme.style_body_cell(ws[f"J{row}"])
         ws[f"J{row}"] = label
-        formula(f"K{row}", f"=Data!W{row - 1}")
+        fmt = FDT if row == 10 else (FI if row == 9 else FD2)
+        formula(f"K{row}", f"=Data!W{row - 1}", fmt)
 
     # ---- Day of Week Scan Average (J12:L19) ----
     header("J12", "Day of Week Scan Average")
@@ -197,8 +213,8 @@ def _build_summary_sheet(wb):
         row = 13 + i
         theme.style_body_cell(ws[f"J{row}"])
         ws[f"J{row}"] = day
-        formula(f"K{row}", f"=Data!Z{row - 9}")
-        formula(f"L{row}", f"=Data!AA{row - 9}")
+        formula(f"K{row}", f"=Data!Z{row - 9}", FI)
+        formula(f"L{row}", f"=Data!AA{row - 9}", FP)
 
     # ---- Origin (J21:L36) ----
     header("J21", "Origin")
@@ -207,8 +223,8 @@ def _build_summary_sheet(wb):
     for row in range(22, 37):
         data_row = row - 18
         formula(f"J{row}", f'=IF(ISBLANK(Data!AC{data_row}),"",Data!AC{data_row})')
-        formula(f"K{row}", f'=IF(ISBLANK(Data!AD{data_row}),"",Data!AD{data_row})')
-        formula(f"L{row}", f'=IF(ISBLANK(Data!AE{data_row}),"",Data!AE{data_row})')
+        formula(f"K{row}", f'=IF(ISBLANK(Data!AD{data_row}),"",Data!AD{data_row})', FI)
+        formula(f"L{row}", f'=IF(ISBLANK(Data!AE{data_row}),"",Data!AE{data_row})', FP)
 
     # ---- Results: Scan Results / Severity (N4:P10) ----
     for coord, text in [("N4", "Scan Results / Severity"), ("O4", "Average"), ("P4", "Max")]:
@@ -218,8 +234,8 @@ def _build_summary_sheet(wb):
         row = 5 + i
         theme.style_body_cell(ws[f"N{row}"])
         ws[f"N{row}"] = label
-        formula(f"O{row}", f"=Data!O{row - 1}")
-        formula(f"P{row}", f"=Data!P{row - 1}")
+        formula(f"O{row}", f"=Data!O{row - 1}", FI)
+        formula(f"P{row}", f"=Data!P{row - 1}", FI)
 
     # ---- Preset Selection (N12:P27) ----
     header("N12", "Preset Selection")
@@ -228,8 +244,8 @@ def _build_summary_sheet(wb):
     for row in range(13, 28):
         data_row = row - 9
         formula(f"N{row}", f'=IF(ISBLANK(Data!AG{data_row}),"",Data!AG{data_row})')
-        formula(f"O{row}", f'=IF(ISBLANK(Data!AH{data_row}),"",Data!AH{data_row})')
-        formula(f"P{row}", f'=IF(ISBLANK(Data!AI{data_row}),"",Data!AI{data_row})')
+        formula(f"O{row}", f'=IF(ISBLANK(Data!AH{data_row}),"",Data!AH{data_row})', FI)
+        formula(f"P{row}", f'=IF(ISBLANK(Data!AI{data_row}),"",Data!AI{data_row})', FP)
 
     # ---- Scan Metrics (B23:D26) ----
     for coord, text in [("B23", "Scan Metrics"), ("C23", "Average"), ("D23", "Max")]:
@@ -238,8 +254,8 @@ def _build_summary_sheet(wb):
         row = 24 + i
         theme.style_body_cell(ws[f"B{row}"])
         ws[f"B{row}"] = label
-        formula(f"C{row}", f"=Data!G{row - 20}")
-        formula(f"D{row}", f"=Data!H{row - 20}")
+        formula(f"C{row}", f"=Data!G{row - 20}", FI)
+        formula(f"D{row}", f"=Data!H{row - 20}", FI)
 
     # ---- Scan Duration (B28:D32) ----
     for coord, text in [("B28", "Scan Duration"), ("C28", "Average"), ("D28", "Max")]:
@@ -249,8 +265,8 @@ def _build_summary_sheet(wb):
         row = 29 + i
         theme.style_body_cell(ws[f"B{row}"])
         ws[f"B{row}"] = label
-        formula(f"C{row}", f"=Data!K{row - 25}")
-        formula(f"D{row}", f"=Data!L{row - 25}")
+        formula(f"C{row}", f"=Data!K{row - 25}", FDU)
+        formula(f"D{row}", f"=Data!L{row - 25}", FDU)
 
     # ---- LOC Range (F28:H40) ----
     for coord, text in [("F28", "LOC Range"), ("G28", "# of Scans "), ("H28", "% Scans")]:
@@ -261,14 +277,14 @@ def _build_summary_sheet(wb):
         row = 29 + i
         theme.style_body_cell(ws[f"F{row}"])
         ws[f"F{row}"] = rng
-        formula(f"G{row}", f"=Data!AL{row - 25}")
-        formula(f"H{row}", f"=Data!AM{row - 25}")
+        formula(f"G{row}", f"=Data!AL{row - 25}", FI)
+        formula(f"H{row}", f"=Data!AM{row - 25}", FP)
 
     for col in "BCDFGHJKLNOP":
         ws.column_dimensions[col].width = 15
-    ws.column_dimensions["B"].width = 28
-    ws.column_dimensions["J"].width = 30
-    ws.column_dimensions["N"].width = 24
+    ws.column_dimensions["B"].width = 30
+    ws.column_dimensions["J"].width = 40
+    ws.column_dimensions["N"].width = 26
     ws.freeze_panes = "B5"
     return ws
 
@@ -289,6 +305,8 @@ def _build_scan_time_analysis_sheet(wb):
         theme.style_header_cell(ws.cell(row=4, column=2 + i, value=h))
 
     data_cols = ["AK", "AL", "AM", "AN", "AO", "AP", "AQ"]
+    col_formats = [None, theme.FMT_INT, theme.FMT_PCT, theme.FMT_DURATION, theme.FMT_DURATION,
+                   theme.FMT_DURATION, theme.FMT_DURATION]
     for i in range(12):  # 12 LOC-range rows
         row = 5 + i
         for j, dcol in enumerate(data_cols):
@@ -296,8 +314,11 @@ def _build_scan_time_analysis_sheet(wb):
             cell = ws[f"{col_letter}{row}"]
             theme.style_body_cell(cell)
             cell.value = f"=Data!{dcol}{row - 1}"
+            if col_formats[j]:
+                cell.number_format = col_formats[j]
     theme.style_body_cell(ws["C17"])
     ws["C17"] = "=SUM(C5:C16)"
+    ws["C17"].number_format = theme.FMT_INT
 
     for col in "BCDEFGH":
         ws.column_dimensions[col].width = 16
@@ -586,10 +607,60 @@ def _build_projects_or_teams_sheet(wb, sheet_name, identity_cols):
     ws.auto_filter.ref = f"{get_column_letter(2)}{detail_header_row}:{get_column_letter(last_col)}{detail_header_row}"
     for c in range(2, last_col + 1):
         ws.column_dimensions[get_column_letter(c)].width = 14
-    ws.column_dimensions["B"].width = 26
+    ws.column_dimensions["B"].width = 34
 
     col_info.update(detail_group_row=detail_group_row, detail_header_row=detail_header_row,
                      detail_data_start=detail_header_row + 1, identity_col_start=identity_col_start,
                      identity_cols=identity_cols, severity_cols=severity_cols, last_col=last_col)
     col_info["identity"] = (identity_col_start,)
+
+    # ---- Overall Distribution (stats table + 2 histograms), positioned past the
+    # detail table's rightmost column so it never collides regardless of row count ----
+    dist_col = last_col + 3
+
+    theme.style_group_cell(ws.cell(row=4, column=dist_col, value=f"Overall Distribution — {sheet_name}"))
+    ws.merge_cells(start_row=4, start_column=dist_col, end_row=4, end_column=dist_col + len(DISTRIBUTION_STAT_COLS) - 1)
+    for i, h in enumerate(DISTRIBUTION_STAT_COLS):
+        theme.style_header_cell(ws.cell(row=5, column=dist_col + i, value=h))
+    dist_stats_header_row = 5
+    dist_stats_data_start = 6
+    dist_stats_data_end = dist_stats_data_start + len(DISTRIBUTION_METRICS) - 1
+
+    hist_row = dist_stats_data_end + 3
+
+    def build_histogram_block(title, hist_row):
+        theme.style_group_cell(ws.cell(row=hist_row, column=dist_col, value=title))
+        ws.merge_cells(start_row=hist_row, start_column=dist_col, end_row=hist_row, end_column=dist_col + 1)
+        theme.style_header_cell(ws.cell(row=hist_row + 1, column=dist_col, value="Range"))
+        theme.style_header_cell(ws.cell(row=hist_row + 1, column=dist_col + 1, value="Count"))
+        header_row = hist_row + 1
+        data_start = header_row + 1
+        data_end = data_start + HISTOGRAM_BIN_COUNT - 1
+
+        chart = BarChart()
+        chart.type = "col"
+        chart.title = title
+        cats = Reference(ws, min_col=dist_col, min_row=data_start, max_row=data_end)
+        vals = Reference(ws, min_col=dist_col + 1, min_row=header_row, max_row=data_end)
+        chart.add_data(vals, titles_from_data=True)
+        chart.set_categories(cats)
+        theme.color_chart_series(chart)
+        _assign_primary_axes(chart)
+        chart.height, chart.width = 8, 16
+        ws.add_chart(chart, f"{get_column_letter(dist_col + 3)}{hist_row}")
+
+        return {"header_row": header_row, "data_start": data_start, "data_end": data_end}
+
+    scans_hist = build_histogram_block(f"{sheet_name}: Scans Distribution", hist_row)
+    loc_hist_row = scans_hist["data_end"] + 4
+    loc_hist = build_histogram_block(f"{sheet_name}: Total LOC Distribution", loc_hist_row)
+
+    ws.column_dimensions[get_column_letter(dist_col)].width = 16
+
+    col_info.update(
+        dist_col_start=dist_col, dist_stats_header_row=dist_stats_header_row,
+        dist_stats_data_start=dist_stats_data_start, dist_stats_data_end=dist_stats_data_end,
+        dist_scans_hist_header_row=scans_hist["header_row"], dist_scans_hist_data_start=scans_hist["data_start"],
+        dist_loc_hist_header_row=loc_hist["header_row"], dist_loc_hist_data_start=loc_hist["data_start"],
+    )
     return col_info
