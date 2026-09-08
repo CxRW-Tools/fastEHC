@@ -17,10 +17,17 @@ The Excel report is generated entirely from code (`workbook_builder.py` + `cx_th
 there is no `.xlsx` template file to keep in sync. The Checkmarx wordmark used in the report
 is bundled under `assets/`.
 
-If Excel ever offers to "repair" a generated report and the charts come back blank, make
-sure you're on a current checkout -- this was caused by an openpyxl defect (every chart's
-`graphicFrame` was missing a required transform) that `workbook_builder.save_workbook()`
-now patches automatically after saving.
+## Validating output
+
+```
+python validate_output.py <generated-file.xlsx>
+```
+
+Checks the things Excel's strict validator rejects but Python tooling happily accepts --
+most importantly chart axis reference integrity. A dangling `crossAx`/`axId` makes Excel
+discard the *entire* drawing part for that sheet (every chart and image on it) and prompt
+to "repair" the workbook, while `openpyxl` and XML well-formedness checks both report the
+file as fine. Run this after changing anything about how charts are constructed.
 afterward.
 
 ## Usage

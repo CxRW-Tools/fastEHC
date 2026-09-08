@@ -4,54 +4,11 @@ Each sheet is constructed with its static labels, formulas, charts, and Checkmar
 branding already in place; the `output_*` functions in fastEHC.py then fill in
 values via `write_to_excel()`, which styles each cell as it writes it.
 """
-import os
-import re
-import zipfile
-
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
 
 import cx_theme as theme
-
-_DRAWINGML_NS = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
-_ANCHOR_BLOCK_RE = re.compile(r"<(oneCellAnchor|twoCellAnchor)>.*?</\1>", re.DOTALL)
-_EXT_RE = re.compile(r'<ext cx="(\d+)" cy="(\d+)"/>')
-
-
-def _patch_anchor_block(match):
-    """openpyxl anchors every chart's graphicFrame with an empty <xfrm/> (no off/ext
-    children) when the chart was added via a plain cell-string anchor. That's schema-
-    invalid -- Excel silently discards the entire drawing part (all charts *and* any
-    image sharing that sheet) rather than just the offending chart. Fill it in using
-    the same extent the (valid) outer anchor already carries."""
-    block = match.group(0)
-    if "<graphicFrame>" not in block or "<xfrm/>" not in block:
-        return block
-    ext_match = _EXT_RE.search(block)
-    if not ext_match:
-        return block
-    cx, cy = ext_match.groups()
-    replacement = (f'<xfrm><a:off {_DRAWINGML_NS} x="0" y="0"/>'
-                   f'<a:ext {_DRAWINGML_NS} cx="{cx}" cy="{cy}"/></xfrm>')
-    return block.replace("<xfrm/>", replacement, 1)
-
-
-def save_workbook(wb, path):
-    """Save the workbook, then patch the empty-<xfrm/> defect openpyxl 3.1.5 leaves
-    on every chart's graphicFrame (see _patch_anchor_block)."""
-    wb.save(path)
-
-    tmp_path = path + ".tmp"
-    with zipfile.ZipFile(path, "r") as zin, zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zout:
-        for item in zin.infolist():
-            data = zin.read(item.filename)
-            if re.match(r"xl/drawings/drawing\d+\.xml$", item.filename):
-                text = data.decode("utf-8")
-                text = _ANCHOR_BLOCK_RE.sub(_patch_anchor_block, text)
-                data = text.encode("utf-8")
-            zout.writestr(item, data)
-    os.replace(tmp_path, path)
 
 # ---- Column groups shared by the Projects/Teams detail tables ----
 SEVERITIES = ["Critical", "High", "Medium", "Low", "Info"]
@@ -69,21 +26,12 @@ DISTRIBUTION_METRICS = ["Scans", "Total LOC", "Avg LOC/Scan", "% Incremental", "
 DISTRIBUTION_STAT_COLS = ["Metric", "Mean", "Median", "Std Dev", "Min", "P25", "P75", "Max"]
 HISTOGRAM_BIN_COUNT = 10
 
-# openpyxl defaults every Bar/LineChart's axis IDs to the same values (10/100),
-# which silently corrupts multiple such charts sharing a workbook on save/reload
-# -- the axIds collide and one chart's series data gets dropped entirely. Every
-# bar/line chart (or combo pair) needs a distinct axId.
-_id_counter = [10]
-
-
-def _next_id():
-    _id_counter[0] += 1
-    return _id_counter[0]
-
-
-def _assign_primary_axes(chart):
-    chart.x_axis.axId = _next_id()
-    chart.y_axis.axId = _next_id()
+# Axis IDs only need to be unique *within* a single chart part, and openpyxl writes
+# each chart to its own chartN.xml, so the stock defaults (10/100) are fine and must
+# be left alone: axId and the paired axis's crossAx back-reference have to stay in
+# sync, and overriding axId without rewriting crossAx produces dangling axis
+# references that make Excel discard the whole drawing part.
+_SECONDARY_AXIS_ID = 200
 
 
 def create_workbook():
@@ -374,7 +322,6 @@ def _build_scan_time_analysis_sheet(wb):
     chart.add_data(vals, titles_from_data=True)
     chart.set_categories(cats)
     theme.color_chart_series(chart)
-    _assign_primary_axes(chart)
     chart.height, chart.width = 9, 18
     ws.add_chart(chart, "J4")
     return ws
@@ -392,17 +339,17 @@ def _combo_bar_line(ws, bar_ref_col, bar_cat_col, bar_name_row, first_data_row, 
     bar.add_data(vals, titles_from_data=True)
     bar.set_categories(cats)
     theme.color_chart_series(bar, start_index=0)
-    _assign_primary_axes(bar)
 
     line = LineChart()
     for i, col in enumerate(line_cols):
         vals = Reference(ws.parent["Data"], min_col=_col_idx(col), min_row=bar_name_row, max_row=last_data_row)
         line.add_data(vals, titles_from_data=True)
     theme.color_chart_series(line, start_index=1)
-    # Combo chart: share the bar's category axis, give the line its own secondary
-    # value axis (time durations and scan counts are very different scales).
-    line.x_axis.axId = bar.x_axis.axId
-    line.y_axis.axId = _next_id()
+    # Combo chart with a secondary value axis (time durations and scan counts are very
+    # different scales). This is openpyxl's documented idiom: give the overlaid chart a
+    # distinct value-axis id and have the primary axis cross at max. The shared category
+    # axis keeps its default id, which the line's default crossAx already points at.
+    line.y_axis.axId = _SECONDARY_AXIS_ID
     bar.y_axis.crosses = "max"
     bar += line
     bar.height, bar.width = 9, 30
@@ -443,7 +390,6 @@ def _build_charts_sheet(wb, proj_cols, team_cols):
         line.add_data(vals, titles_from_data=True)
     line.set_categories(cats)
     theme.color_chart_series(line)
-    _assign_primary_axes(line)
     line.height, line.width = 9, 30
     ws.add_chart(line, "B53")
 
@@ -456,7 +402,6 @@ def _build_charts_sheet(wb, proj_cols, team_cols):
     bar.add_data(vals, titles_from_data=True)
     bar.set_categories(cats)
     theme.color_chart_series(bar)
-    _assign_primary_axes(bar)
     bar.height, bar.width = 9, 30
     ws.add_chart(bar, "B77")
 
@@ -520,7 +465,6 @@ def _build_charts_sheet(wb, proj_cols, team_cols):
     proj_bar.add_data(vals, titles_from_data=True)
     proj_bar.set_categories(cats)
     theme.color_chart_series(proj_bar)
-    _assign_primary_axes(proj_bar)
     proj_bar.height, proj_bar.width = 9, 22
     ws.add_chart(proj_bar, "B149")
 
@@ -533,7 +477,6 @@ def _build_charts_sheet(wb, proj_cols, team_cols):
     proj_bar2.add_data(vals, titles_from_data=True)
     proj_bar2.set_categories(cats)
     theme.color_chart_series(proj_bar2)
-    _assign_primary_axes(proj_bar2)
     proj_bar2.height, proj_bar2.width = 9, 22
     ws.add_chart(proj_bar2, "L149")
 
@@ -547,7 +490,6 @@ def _build_charts_sheet(wb, proj_cols, team_cols):
     team_bar.add_data(vals, titles_from_data=True)
     team_bar.set_categories(cats)
     theme.color_chart_series(team_bar)
-    _assign_primary_axes(team_bar)
     team_bar.height, team_bar.width = 9, 22
     ws.add_chart(team_bar, "B173")
 
@@ -560,7 +502,6 @@ def _build_charts_sheet(wb, proj_cols, team_cols):
     team_bar2.add_data(vals, titles_from_data=True)
     team_bar2.set_categories(cats)
     theme.color_chart_series(team_bar2)
-    _assign_primary_axes(team_bar2)
     team_bar2.height, team_bar2.width = 9, 22
     ws.add_chart(team_bar2, "L173")
 
@@ -688,7 +629,6 @@ def _build_projects_or_teams_sheet(wb, sheet_name, identity_cols):
         chart.add_data(vals, titles_from_data=True)
         chart.set_categories(cats)
         theme.color_chart_series(chart)
-        _assign_primary_axes(chart)
         chart.height, chart.width = 8, 16
         ws.add_chart(chart, f"{get_column_letter(dist_col + 3)}{hist_row}")
 
