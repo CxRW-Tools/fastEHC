@@ -7,6 +7,9 @@ values via `write_to_excel()`, which styles each cell as it writes it.
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+from openpyxl.chart.axis import ChartLines
+from openpyxl.chart.shapes import GraphicalProperties
+from openpyxl.drawing.line import LineProperties
 
 import cx_theme as theme
 
@@ -25,6 +28,8 @@ DISTRIBUTION_METRICS = ["Scans", "Total LOC", "Avg LOC/Scan", "% Incremental", "
                          "Avg Scans/Week", "Critical Avg", "High Avg", "Medium Avg", "Low Avg", "Info Avg"]
 DISTRIBUTION_STAT_COLS = ["Metric", "Mean", "Median", "Std Dev", "Min", "P25", "P75", "Max"]
 HISTOGRAM_BIN_COUNT = 10
+# How many rows the Top-N project/team blocks (and their charts) hold
+TOP_N = 15
 
 # Axis IDs only need to be unique *within* a single chart part, and openpyxl writes
 # each chart to its own chartN.xml, so the stock defaults (10/100) are fine and must
@@ -34,7 +39,7 @@ HISTOGRAM_BIN_COUNT = 10
 _SECONDARY_AXIS_ID = 200
 
 
-def create_workbook():
+def create_workbook(counts=None):
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -44,7 +49,7 @@ def create_workbook():
         wb, "Teams", identity_cols=["Team", "Unique Projects", "Avg Scans/Project"])
     _build_scan_time_analysis_sheet(wb)
     _build_data_sheet(wb)
-    _build_charts_sheet(wb, proj_cols, team_cols)
+    _build_charts_sheet(wb, proj_cols, team_cols, counts)
 
     # Data must exist before Charts is built (charts reference it), but the tab
     # order we actually want to present is: Summary, Projects, Teams, Scan Time
@@ -322,7 +327,9 @@ def _build_scan_time_analysis_sheet(wb):
     chart.add_data(vals, titles_from_data=True)
     chart.set_categories(cats)
     theme.color_chart_series(chart)
-    chart.height, chart.width = 9, 18
+    _style_axes(chart, x_title="LOC Range", y_title="Scans", y_fmt=theme.FMT_INT, single_series=True)
+    _space_title(chart)
+    chart.height, chart.width = 11, 18
     ws.add_chart(chart, "J4")
     return ws
 
@@ -330,7 +337,7 @@ def _build_scan_time_analysis_sheet(wb):
 # ======================= CHARTS SHEET =======================
 
 def _combo_bar_line(ws, bar_ref_col, bar_cat_col, bar_name_row, first_data_row, last_data_row,
-                     line_cols, title):
+                     line_cols, title, cat_title="Date"):
     bar = BarChart()
     bar.type = "col"
     bar.title = title
@@ -350,13 +357,72 @@ def _combo_bar_line(ws, bar_ref_col, bar_cat_col, bar_name_row, first_data_row, 
     # distinct value-axis id and have the primary axis cross at max. The shared category
     # axis keeps its default id, which the line's default crossAx already points at.
     line.y_axis.axId = _SECONDARY_AXIS_ID
-    bar.y_axis.crosses = "max"
+    line.y_axis.delete = False
+    line.y_axis.majorTickMark = "out"
+    line.y_axis.tickLblPos = "nextTo"
+    line.y_axis.title = "Duration (h:mm:ss)"
+    line.y_axis.numFmt = theme.FMT_DURATION
+    line.y_axis.crosses = "max"
+
+    _style_axes(bar, x_title=cat_title, y_title="Scans", y_fmt=theme.FMT_INT)
+    _space_title(bar)
     bar += line
-    bar.height, bar.width = 9, 30
+    bar.height, bar.width = 11, 30
     return bar
 
 
-def _build_charts_sheet(wb, proj_cols, team_cols):
+def _space_title(chart):
+    """Keep the title out of the plot area. Without this the title overlays the plot
+    and sits jammed against the marks."""
+    if chart.title is not None:
+        chart.title.overlay = False
+    if getattr(chart, "legend", None) is not None:
+        chart.legend.overlay = False
+
+
+def _style_axes(chart, x_title=None, y_title=None, y_fmt=None, x_fmt=None,
+                 secondary_title=None, secondary_fmt=None, single_series=False):
+    """Make axes visible and labelled, and push the grid into the background.
+
+    openpyxl omits <delete>, <tickLblPos> and <majorTickMark> entirely, and Excel's
+    default for a missing <delete> hides the axis -- so charts render with no scale
+    and no tick labels at all until these are set explicitly. Default gridlines also
+    come out heavy black; they should recede behind the data.
+    """
+    for ax, title, fmt in ((chart.x_axis, x_title, x_fmt), (chart.y_axis, y_title, y_fmt)):
+        ax.delete = False
+        ax.majorTickMark = "out"
+        ax.minorTickMark = "none"
+        ax.tickLblPos = "nextTo"
+        if title:
+            ax.title = title
+        if fmt:
+            ax.numFmt = fmt
+
+    # Horizontal rules only, in a light gray so the marks stay dominant.
+    chart.y_axis.majorGridlines = ChartLines(
+        spPr=GraphicalProperties(ln=LineProperties(solidFill="D9D9D9", w=9525)))
+    chart.x_axis.majorGridlines = None
+
+    if secondary_title or secondary_fmt:
+        chart.y_axis.crosses = "max"
+
+    # A single series is already named by the chart title, so a legend box just
+    # eats plot space; with two or more, keep it out from under the data.
+    if single_series:
+        chart.legend = None
+    elif chart.legend is not None:
+        chart.legend.position = "b"
+        chart.legend.overlay = False
+
+
+def _build_charts_sheet(wb, proj_cols, team_cols, counts=None):
+    counts = counts or {}
+
+    def n(key, default):
+        """Row count for a section, floored at 1 so a range is never inverted."""
+        return max(int(counts.get(key, default) or 0), 1)
+
     ws = wb.create_sheet("Charts")
     theme.add_corner_logo(ws)
     ws.sheet_properties.tabColor = theme.QUANTUM_VIOLET
@@ -368,77 +434,97 @@ def _build_charts_sheet(wb, proj_cols, team_cols):
         ws.merge_cells(rng)
 
     banner("B2:R2", "Charts")
+    data_ws = wb["Data"]
+
+    # Every range below ends at the last row that actually has data, so charts don't
+    # carry a tail of blank legend entries / empty categories.
+    n_dates = n("dates", 90)
+    n_weeks = n("weeks", 13)
+    n_conc = n("concurrency", 90)
+    n_langs = n("languages", 18)
+    n_loc = n("loc_ranges", 12)
+    n_origins = n("origins", 18)
+    n_presets = n("presets", 12)
 
     # --- Daily Scan Summary (bar: Scans, line: Avg Source Pulling / Queue Time) ---
     banner("B4:R4", "Daily Scan Summary")
-    chart = _combo_bar_line(ws, "AX", "AW", 3, 4, 800, ["BH", "BJ"], "Daily Scan Summary")
+    chart = _combo_bar_line(ws, "AX", "AW", 3, 4, 3 + n_dates, ["BH", "BJ"], "Daily Scan Summary")
     ws.add_chart(chart, "B5")
 
     # --- Weekly Scan Summary ---
     banner("B28:R28", "Weekly Scan Summary")
-    chart = _combo_bar_line(ws, "BP", "BO", 3, 4, 115, ["BZ", "CB"], "Weekly Scan Summary")
+    chart = _combo_bar_line(ws, "BP", "BO", 3, 4, 3 + n_weeks, ["BZ", "CB"], "Weekly Scan Summary",
+                             cat_title="Week")
     ws.add_chart(chart, "B29")
 
     # --- Concurrency Analysis ---
     banner("B52:R52", "Concurrency Analysis")
     line = LineChart()
     line.title = "Concurrency Analysis"
-    data_ws = wb["Data"]
-    cats = Reference(data_ws, min_col=_col_idx("AS"), min_row=4, max_row=92)
+    cats = Reference(data_ws, min_col=_col_idx("AS"), min_row=4, max_row=3 + n_conc)
     for col in ("AT", "AU"):
-        vals = Reference(data_ws, min_col=_col_idx(col), min_row=3, max_row=92)
+        vals = Reference(data_ws, min_col=_col_idx(col), min_row=3, max_row=3 + n_conc)
         line.add_data(vals, titles_from_data=True)
     line.set_categories(cats)
     theme.color_chart_series(line)
-    line.height, line.width = 9, 30
+    _style_axes(line, x_title="Date", y_title="Concurrent Scans", y_fmt=theme.FMT_INT)
+    _space_title(line)
+    line.height, line.width = 11, 30
     ws.add_chart(line, "B53")
 
     # --- Language Analysis ---
     banner("B76:R76", "Language Analysis")
     bar = BarChart()
     bar.title = "Scan Languages"
-    cats = Reference(data_ws, min_col=_col_idx("R"), min_row=4, max_row=21)
-    vals = Reference(data_ws, min_col=_col_idx("T"), min_row=3, max_row=21)
+    cats = Reference(data_ws, min_col=_col_idx("R"), min_row=4, max_row=3 + n_langs)
+    vals = Reference(data_ws, min_col=_col_idx("T"), min_row=3, max_row=3 + n_langs)
     bar.add_data(vals, titles_from_data=True)
     bar.set_categories(cats)
     theme.color_chart_series(bar)
-    bar.height, bar.width = 9, 30
+    _style_axes(bar, x_title="Language", y_title="Scans", y_fmt=theme.FMT_INT, single_series=True)
+    _space_title(bar)
+    bar.height, bar.width = 11, 30
     ws.add_chart(bar, "B77")
 
-    # --- Scan Size Analysis (pie: scans by LOC range) ---
+    # --- Scan Size Analysis (scans by LOC range) ---
+    # LOC ranges are ordered magnitude buckets, not unrelated categories, so they get
+    # a single-hue light-to-dark ramp rather than a set of competing hues.
     banner("B100:I100", "Scan Size Analysis")
     pie = PieChart()
     pie.title = "Scans by LOC Range"
-    cats = Reference(data_ws, min_col=_col_idx("AK"), min_row=4, max_row=15)
-    vals = Reference(data_ws, min_col=_col_idx("AL"), min_row=3, max_row=15)
+    cats = Reference(data_ws, min_col=_col_idx("AK"), min_row=4, max_row=3 + n_loc)
+    vals = Reference(data_ws, min_col=_col_idx("AL"), min_row=3, max_row=3 + n_loc)
     pie.add_data(vals, titles_from_data=True)
     pie.set_categories(cats)
-    theme.color_chart_series(pie)
-    pie.height, pie.width = 9, 14
+    theme.color_sequential_slices(pie, n_loc)
+    _space_title(pie)
+    pie.height, pie.width = 10, 15
     ws.add_chart(pie, "B101")
 
     # --- Origin Analysis ---
     banner("K100:R100", "Origin Analysis")
     pie = PieChart()
     pie.title = "Scan Origins"
-    cats = Reference(data_ws, min_col=_col_idx("AC"), min_row=4, max_row=50)
-    vals = Reference(data_ws, min_col=_col_idx("AD"), min_row=3, max_row=50)
+    cats = Reference(data_ws, min_col=_col_idx("AC"), min_row=4, max_row=3 + n_origins)
+    vals = Reference(data_ws, min_col=_col_idx("AD"), min_row=3, max_row=3 + n_origins)
     pie.add_data(vals, titles_from_data=True)
     pie.set_categories(cats)
-    theme.color_chart_series(pie)
-    pie.height, pie.width = 9, 14
+    theme.color_categorical_slices(pie, n_origins)
+    _space_title(pie)
+    pie.height, pie.width = 10, 15
     ws.add_chart(pie, "K101")
 
     # --- Preset Analysis ---
     banner("B124:I124", "Preset Analysis")
     pie = PieChart()
     pie.title = "Scan Presets"
-    cats = Reference(data_ws, min_col=_col_idx("AG"), min_row=4, max_row=50)
-    vals = Reference(data_ws, min_col=_col_idx("AH"), min_row=3, max_row=50)
+    cats = Reference(data_ws, min_col=_col_idx("AG"), min_row=4, max_row=3 + n_presets)
+    vals = Reference(data_ws, min_col=_col_idx("AH"), min_row=3, max_row=3 + n_presets)
     pie.add_data(vals, titles_from_data=True)
     pie.set_categories(cats)
-    theme.color_chart_series(pie)
-    pie.height, pie.width = 9, 14
+    theme.color_categorical_slices(pie, n_presets)
+    _space_title(pie)
+    pie.height, pie.width = 10, 15
     ws.add_chart(pie, "B125")
 
     # --- Results Analysis (severity pie, exact brand severity colors) ---
@@ -450,7 +536,8 @@ def _build_charts_sheet(wb, proj_cols, team_cols):
     pie.add_data(vals, titles_from_data=False)
     pie.set_categories(cats)
     theme.color_severity_pie(pie)
-    pie.height, pie.width = 9, 14
+    _space_title(pie)
+    pie.height, pie.width = 10, 15
     ws.add_chart(pie, "K125")
 
     # --- Project & Team Analysis ---
@@ -458,51 +545,61 @@ def _build_charts_sheet(wb, proj_cols, team_cols):
     proj_bar = BarChart()
     proj_bar.title = "Top Projects by Scan Volume"
     proj_ws = wb["Projects"]
+    n_top_proj = n("top_projects", TOP_N)
     cats = Reference(proj_ws, min_col=proj_cols["identity"][0], min_row=proj_cols["vol_data_start"],
-                      max_row=proj_cols["vol_data_end"])
+                      max_row=proj_cols["vol_data_start"] + n_top_proj - 1)
     vals = Reference(proj_ws, min_col=proj_cols["vol_scans_col"], min_row=proj_cols["vol_header_row"],
-                      max_row=proj_cols["vol_data_end"])
+                      max_row=proj_cols["vol_data_start"] + n_top_proj - 1)
     proj_bar.add_data(vals, titles_from_data=True)
     proj_bar.set_categories(cats)
     theme.color_chart_series(proj_bar)
-    proj_bar.height, proj_bar.width = 9, 22
+    _style_axes(proj_bar, x_title="Logical Project", y_title="Scans", y_fmt=theme.FMT_INT, single_series=True)
+    _space_title(proj_bar)
+    proj_bar.height, proj_bar.width = 11, 22
     ws.add_chart(proj_bar, "B149")
 
     proj_bar2 = BarChart()
     proj_bar2.title = "Top Projects by Scan Size"
     cats = Reference(proj_ws, min_col=proj_cols["identity"][0], min_row=proj_cols["size_data_start"],
-                      max_row=proj_cols["size_data_end"])
+                      max_row=proj_cols["size_data_start"] + n_top_proj - 1)
     vals = Reference(proj_ws, min_col=proj_cols["size_loc_col"], min_row=proj_cols["size_header_row"],
-                      max_row=proj_cols["size_data_end"])
+                      max_row=proj_cols["size_data_start"] + n_top_proj - 1)
     proj_bar2.add_data(vals, titles_from_data=True)
     proj_bar2.set_categories(cats)
     theme.color_chart_series(proj_bar2)
-    proj_bar2.height, proj_bar2.width = 9, 22
+    _style_axes(proj_bar2, x_title="Logical Project", y_title="Total LOC", y_fmt=theme.FMT_INT, single_series=True)
+    _space_title(proj_bar2)
+    proj_bar2.height, proj_bar2.width = 11, 22
     ws.add_chart(proj_bar2, "L149")
 
     team_ws = wb["Teams"]
     team_bar = BarChart()
     team_bar.title = "Teams by Scan Volume"
+    n_top_team = n("top_teams", TOP_N)
     cats = Reference(team_ws, min_col=team_cols["identity"][0], min_row=team_cols["vol_data_start"],
-                      max_row=team_cols["vol_data_end"])
+                      max_row=team_cols["vol_data_start"] + n_top_team - 1)
     vals = Reference(team_ws, min_col=team_cols["vol_scans_col"], min_row=team_cols["vol_header_row"],
-                      max_row=team_cols["vol_data_end"])
+                      max_row=team_cols["vol_data_start"] + n_top_team - 1)
     team_bar.add_data(vals, titles_from_data=True)
     team_bar.set_categories(cats)
     theme.color_chart_series(team_bar)
-    team_bar.height, team_bar.width = 9, 22
+    _style_axes(team_bar, x_title="Team", y_title="Scans", y_fmt=theme.FMT_INT, single_series=True)
+    _space_title(team_bar)
+    team_bar.height, team_bar.width = 11, 22
     ws.add_chart(team_bar, "B173")
 
     team_bar2 = BarChart()
     team_bar2.title = "Teams by Scan Size"
     cats = Reference(team_ws, min_col=team_cols["identity"][0], min_row=team_cols["size_data_start"],
-                      max_row=team_cols["size_data_end"])
+                      max_row=team_cols["size_data_start"] + n_top_team - 1)
     vals = Reference(team_ws, min_col=team_cols["size_loc_col"], min_row=team_cols["size_header_row"],
-                      max_row=team_cols["size_data_end"])
+                      max_row=team_cols["size_data_start"] + n_top_team - 1)
     team_bar2.add_data(vals, titles_from_data=True)
     team_bar2.set_categories(cats)
     theme.color_chart_series(team_bar2)
-    team_bar2.height, team_bar2.width = 9, 22
+    _style_axes(team_bar2, x_title="Team", y_title="Total LOC", y_fmt=theme.FMT_INT, single_series=True)
+    _space_title(team_bar2)
+    team_bar2.height, team_bar2.width = 11, 22
     ws.add_chart(team_bar2, "L173")
 
     return ws
@@ -520,7 +617,6 @@ def _build_projects_or_teams_sheet(wb, sheet_name, identity_cols):
     title_cell.value = f"{sheet_name} — Scan Size, Volume & Severity by {'Logical Project' if entity == 'Project' else 'Team'}"
     title_cell.font = theme.TITLE_FONT
 
-    TOP_N = 15
     col_info = {}
 
     # ---- Top N by Volume (left block) ----
@@ -629,7 +725,10 @@ def _build_projects_or_teams_sheet(wb, sheet_name, identity_cols):
         chart.add_data(vals, titles_from_data=True)
         chart.set_categories(cats)
         theme.color_chart_series(chart)
-        chart.height, chart.width = 8, 16
+        _style_axes(chart, x_title="Range", y_title=sheet_name, y_fmt=theme.FMT_INT,
+                     single_series=True)
+        _space_title(chart)
+        chart.height, chart.width = 10, 16
         ws.add_chart(chart, f"{get_column_letter(dist_col + 3)}{hist_row}")
 
         return {"header_row": header_row, "data_start": data_start, "data_end": data_end}

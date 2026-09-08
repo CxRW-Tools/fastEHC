@@ -55,6 +55,40 @@ NOTE_FONT = Font(name=FONT_NAME, italic=True, color="808080", size=9)
 CHART_PALETTE = [QUANTUM_VIOLET, VELOCITY_BLUE, SIGNAL_ORANGE,
                   VIOLET_TINT_60, VIOLET_TINT_40, VIOLET_TINT_20]
 
+# Categorical slice colors, assigned in this fixed order (never cycled by rank).
+# The first three are the brand accents and are the only combination that passes
+# every colorblind-separation check; the trailing steps are lighter/darker brand
+# steps that stay distinguishable but lean on the legend label for identity, so
+# don't rely on color alone past the first few slices.
+CATEGORICAL_PALETTE = [
+    QUANTUM_VIOLET,   # #6B34FD
+    SIGNAL_ORANGE,    # #F25929
+    VELOCITY_BLUE,    # #006BD5
+    "8B5CF6",         # lighter violet
+    "00A3E0",         # lighter blue
+    "4A1FB8",         # deep violet
+    "B8410F",         # deep orange
+    "1F5C8B",         # deep blue
+]
+
+
+def sequential_violet_ramp(n):
+    """n steps of one hue, light -> dark. For *ordered* buckets (LOC ranges), where
+    the values are magnitudes rather than unrelated categories, a single-hue ramp is
+    the correct encoding -- not a set of unrelated hues."""
+    if n <= 0:
+        return []
+    light = (0xE4, 0xD9, 0xFE)   # violet tint 20
+    dark = (0x3A, 0x14, 0xA8)    # deep violet
+    if n == 1:
+        return [QUANTUM_VIOLET]
+    steps = []
+    for i in range(n):
+        t = i / (n - 1)
+        rgb = tuple(round(light[c] + (dark[c] - light[c]) * t) for c in range(3))
+        steps.append("%02X%02X%02X" % rgb)
+    return steps
+
 THIN_BORDER = Border(*(Side(style="thin", color="D9D9D9"),) * 4)
 
 # Number formats -- the old template baked these into its cells; since the workbook is
@@ -149,3 +183,28 @@ def color_severity_pie(chart, order=("critical", "high", "medium", "low")):
             dp.graphicalProperties = GraphicalProperties(solidFill=SEVERITY_COLORS[sev])
             dpts.append(dp)
         series.data_points = dpts
+
+
+def color_slices(chart, colors):
+    """Give each slice/point its own color. A pie has one series, so setting a color
+    on the series paints every slice identically -- per-slice color has to be set as
+    explicit data points."""
+    for series in chart.series:
+        dpts = []
+        for idx, color in enumerate(colors):
+            dp = DataPoint(idx=idx)
+            dp.graphicalProperties = GraphicalProperties(solidFill=color)
+            dpts.append(dp)
+        series.data_points = dpts
+
+
+def color_categorical_slices(chart, count):
+    """Per-slice categorical colors in fixed palette order."""
+    palette = CATEGORICAL_PALETTE
+    colors = [palette[i % len(palette)] for i in range(max(count, 0))]
+    color_slices(chart, colors)
+
+
+def color_sequential_slices(chart, count):
+    """Per-slice single-hue ramp, for ordered buckets."""
+    color_slices(chart, sequential_violet_ramp(count))

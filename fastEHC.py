@@ -822,6 +822,26 @@ def process_scans(scans, full_csv):
     }
 
 
+### How many rows each charted section will actually fill, so chart ranges can stop
+# at the last row with data instead of a fixed guess (which leaves blank categories
+# and empty legend entries on every chart).
+def chart_row_counts(data):
+    weeks = {d - timedelta(days=d.weekday()) for d in data['scan_stats_by_date']}
+    concurrency_days = {snapshot[0].date() for snapshot in data['cc_metrics']}
+    origins_with_data = sum(1 for v in data['scan_origins'].values() if v['scan_count'] > 0)
+    return {
+        'dates': len(data['scan_stats_by_date']),
+        'weeks': len(weeks),
+        'concurrency': len(concurrency_days),
+        'languages': len(data['scan_languages']),
+        'loc_ranges': len(data['scan_times_by_loc']),
+        'origins': origins_with_data,
+        'presets': len(data['scan_presets']),
+        'top_projects': min(TOP_N_ENTITIES, len(data['project_stats'])),
+        'top_teams': min(TOP_N_ENTITIES, len(data['team_stats'])),
+    }
+
+
 ### Shell function to handle outputs
 def output_analysis(data, csv_config, excel_config):
     # Identify daily max concurrency values based on the granular calculations made previously
@@ -1453,18 +1473,22 @@ if __name__ == "__main__":
             print(f"Error creating directory: {e}")
             exit(1)
 
-    # If we're exporting to Excel, build the workbook from scratch (no template file involved)
-    if excel_config['enabled']:
-        if not xl_available:
-            parser.error("--excel requires the openpyxl and Pillow libraries: 'pip install openpyxl Pillow'")
-        workbook, proj_cols, team_cols = workbook_builder.create_workbook()
-        excel_config['workbook'] = workbook
-        excel_config['proj_cols'] = proj_cols
-        excel_config['team_cols'] = team_cols
+    if excel_config['enabled'] and not xl_available:
+        parser.error("--excel requires the openpyxl and Pillow libraries: 'pip install openpyxl Pillow'")
 
     full_csv['field_names'], scans = ingest_file(input_file)
 
     processed_data = process_scans(scans, full_csv)
+
+    # Build the workbook from scratch (no template file involved). This happens after
+    # processing so chart ranges can be sized to the rows that actually have data --
+    # otherwise every chart carries a tail of blank categories/legend entries.
+    if excel_config['enabled']:
+        workbook, proj_cols, team_cols = workbook_builder.create_workbook(
+            chart_row_counts(processed_data))
+        excel_config['workbook'] = workbook
+        excel_config['proj_cols'] = proj_cols
+        excel_config['team_cols'] = team_cols
 
     output_analysis(processed_data, csv_config, excel_config)
 
